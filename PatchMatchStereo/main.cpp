@@ -7,22 +7,41 @@
 #include <algorithm>
 #include <vector>
 
-#define PRECOMPUTE_WEIGHTS
-#define DO_ITERATION
-#define DO_POSTPROCESS
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+
+#ifdef _DEBUG
+#pragma comment(lib, "opencv_core248d.lib")
+#pragma comment(lib, "opencv_highgui248d.lib")
+#pragma comment(lib, "opencv_imgproc248d.lib")
+#pragma comment(lib, "opencv_features2d248d.lib")
+#pragma comment(lib, "opencv_calib3d248d.lib")
+#pragma comment(lib, "opencv_video248d.lib")
+#pragma comment(lib, "opencv_flann248d.lib")
+#else
+#pragma comment(lib, "opencv_core248.lib")
+#pragma comment(lib, "opencv_highgui248.lib")
+#pragma comment(lib, "opencv_imgproc248.lib")
+#pragma comment(lib, "opencv_features2d248.lib")
+#pragma comment(lib, "opencv_calib3d248.lib")
+#pragma comment(lib, "opencv_video248.lib")
+#pragma comment(lib, "opencv_flann248.lib")
+#endif
 
 
 // Gobal variables
-int nrows, ncols, ndisps, dmax;
-float BAD_PLANE_PENALTY;
-const int	patch_w				= 35;
-const int	patch_r				= 17;
-const int	maxiters			= 3;
-const float gamma				= 10;
-const float gamma_proximity		= 25;
+int nrows, ncols, ndisps, dmax, scale;
+float BAD_PLANE_PENALTY = 120;  // defined as 2 times the max cost of dsi.
+const int	patch_w = 35;
+const int	patch_r = 17;
+const int	maxiters = 3;
+const float gamma = 10;
+const float gamma_proximity = 25;
+int			g_improve_cnt = 0;
 
+cv::Mat g_L, g_OC, g_ALL, g_DISC, g_GT;
 
-int g_improve_cnt = 0;
 
 struct Plane {
 	float a, b, c;
@@ -75,17 +94,26 @@ class VECBITMAP {
 public:
 	T *data;
 	int w, h, n;
-	bool useOthersMemory;
-	T *get(int y, int x) { return &data[(y*w + x)*n]; }		/* Get patch (x, y). */
+	bool is_shared;
+	T *get(int y, int x) { return &data[(y*w + x)*n]; }		/* Get patch (y, x). */
 	T *line_n1(int y) { return &data[y*w]; }				/* Get line y assuming n=1. */
 	VECBITMAP() { }
+	VECBITMAP(const VECBITMAP& obj)
+	{
+		// This constructor is very necessary for returning an object in a function,
+		// in the case that the Name Return Value Optimization (NRVO) is turned off.
+		w = obj.w; h = obj.h; n = obj.n; is_shared = obj.is_shared;
+		if (is_shared) { data = obj.data; }
+		else { data = new T[w*h*n]; memcpy(data, obj.data, w*h*n*sizeof(T)); }
+
+	}
 	VECBITMAP(int h_, int w_, int n_ = 1, T* data_ = NULL)
 	{
 		w = w_; h = h_; n = n_;
-		if (!data_) { data = new T[w*h*n]; useOthersMemory = false; }
-		else	    { data = data_;        useOthersMemory = true; }
+		if (!data_) { data = new T[w*h*n]; is_shared = false; }
+		else	    { data = data_;        is_shared = true; }
 	}
-	~VECBITMAP() { if (!useOthersMemory) delete[] data; }
+	~VECBITMAP() { if (!is_shared) delete[] data; }
 	T *operator[](int y) { return &data[y*w]; }
 };
 
@@ -112,7 +140,6 @@ float *PrecomputeWeights(VECBITMAP<unsigned char>& im)
 	for (int yc = 0; yc < nrows; yc++) {
 		for (int xc = 0; xc < ncols; xc++) {
 
-			//float *ww = &weights[(yc*ncols + xc) * patchsize];
 			float *w = &weights[(yc*ncols + xc) * patchsize];
 			unsigned char *rgb1 = im.get(yc, xc);
 			unsigned char *rgb2 = NULL;
@@ -121,16 +148,12 @@ float *PrecomputeWeights(VECBITMAP<unsigned char>& im)
 			int xb = std::max(0, xc - patch_r), xe = std::min(ncols - 1, xc + patch_r);
 
 			for (int y = yb; y <= ye; y++) {
-				//float *w = &ww[patch_w * (y - yc + patch_r)];
 				for (int x = xb; x <= xe; x++) {
 					rgb2 = im.get(y, x);
 					float cost = std::abs((float)rgb1[0] - (float)rgb2[0])
-							+ std::abs((float)rgb1[1] - (float)rgb2[1])
-							+ std::abs((float)rgb1[2] - (float)rgb2[2]);
-					//w[x - xc + patch_r] = cost;
+						+ std::abs((float)rgb1[1] - (float)rgb2[1])
+						+ std::abs((float)rgb1[2] - (float)rgb2[2]);
 					w[(y - yc + patch_r) * patch_w + (x - xc + patch_r)] = cost;
-					//w[(y - yc + patch_r) * patch_w + (x - xc + patch_r)] 
-					//	= exp(-cost / gamma) * w_prox[(y - yc + patch_r) * patch_w + (x - xc + patch_r)];
 				}
 			}
 		}
@@ -184,14 +207,11 @@ void RandomInit(VECBITMAP<Plane>& coeffs, VECBITMAP<float>& bestcosts, VECBITMAP
 		}
 	}
 
-	int tic, toc;
-	tic = clock();  printf("computing plane costs ...\n");	
 	for (int y = 0; y < nrows; y++) {
 		for (int x = 0; x < ncols; x++) {
 			bestcosts[y][x] = ComputePlaneCost(y, x, coeffs[y][x], dsi, VECBITMAP<float>(patch_w, patch_w, 1, &weights[y*ncols + x]));
 		}
 	}
-	toc = clock();  printf("compute plane costs comsumes %.2fs\n\n", (toc - tic) / 1000.f);
 }
 
 void ImproveGuess(int y, int x, Plane& coeff_old, float& bestcost, Plane& coeff_try, VECBITMAP<float>& dsi, VECBITMAP<float>& w)
@@ -204,9 +224,13 @@ void ImproveGuess(int y, int x, Plane& coeff_old, float& bestcost, Plane& coeff_
 	}
 }
 
-void ProcessView(VECBITMAP<Plane>& coeffsL, VECBITMAP<float>& bestcostsL, VECBITMAP<float>& dsiL, float* weightsL,
-				 VECBITMAP<Plane>& coeffsR, VECBITMAP<float>& bestcostsR, VECBITMAP<float>& dsiR, float* weightsR,
-	int iter, int sign)
+void ProcessView(
+	VECBITMAP<Plane>& coeffsL,		VECBITMAP<Plane>& coeffsR, 
+	VECBITMAP<float>& bestcostsL,	VECBITMAP<float>& bestcostsR, 
+	VECBITMAP<float>& dsiL,			VECBITMAP<float>& dsiR, 
+	float* weightsL,				float* weightsR,
+	int iter, 
+	int sign)
 {
 	int xstart, xend, xchange, ystart, yend, ychange;
 	if (iter % 2 == 0) {
@@ -221,7 +245,6 @@ void ProcessView(VECBITMAP<Plane>& coeffsL, VECBITMAP<float>& bestcostsL, VECBIT
 	for (int y = ystart; y != yend; y += ychange) {
 		for (int x = xstart; x != xend; x += xchange) {
 
-			//VECBITMAP<float> wL(patch_w, patch_w, 1, &weightsL[y*ncols + x]);
 			VECBITMAP<float> wL(patch_w, patch_w, 1, &weightsL[(y*ncols + x) * patch_w * patch_w]);
 
 			// Spatial Propagation
@@ -250,85 +273,7 @@ void ProcessView(VECBITMAP<Plane>& coeffsL, VECBITMAP<float>& bestcostsL, VECBIT
 			// View Propagation
 			Plane coeff_try = coeffsL[y][x].ReparametrizeInOtherView(y, x, sign, qy, qx);
 			if (0 <= qx && qx < ncols) {
-				//VECBITMAP<float> wR(patch_w, patch_w, 1, &weightsR[qy*ncols + qx]);
 				VECBITMAP<float> wR(patch_w, patch_w, 1, &weightsR[(qy*ncols + qx) * patch_w * patch_w]);
-				ImproveGuess(qy, qx, coeffsR[qy][qx], bestcostsR[qy][qx], coeff_try, dsiR, wR);
-			}
-		}
-	}
-}
-
-VECBITMAP<float> ComputePatchWeights(int yc, int xc, VECBITMAP<unsigned char> img, float *weights)
-{
-	memset(weights, 0, patch_w * patch_w * sizeof(float));
-	VECBITMAP<float> w(patch_w, patch_w, 1, weights);
-	unsigned char *rgb1 = img.get(yc, xc);
-	unsigned char *rgb2 = NULL;
-
-	int yb = std::max(0, yc - patch_r), ye = std::min(nrows - 1, yc + patch_r);
-	int xb = std::max(0, xc - patch_r), xe = std::min(ncols - 1, xc + patch_r);
-
-	for (int y = yb; y <= ye; y++) {
-		for (int x = xb; x <= xe; x++) {
-			rgb2 = img.get(y, x);
-			float diff = std::abs((float)rgb1[0] - (float)rgb2[0])
-					   + std::abs((float)rgb1[1] - (float)rgb2[1])
-					   + std::abs((float)rgb1[2] - (float)rgb2[2]);
-			w[y - yc + patch_r][x - xc + patch_r] = exp(-diff / gamma);
-		}
-	}
-
-	return VECBITMAP<float>(patch_w, patch_w, 1, weights);
-}
-
-void ProcessView2(VECBITMAP<Plane>& coeffsL, VECBITMAP<float>& bestcostsL, VECBITMAP<float>& dsiL, VECBITMAP<unsigned char>& imL,
-				  VECBITMAP<Plane>& coeffsR, VECBITMAP<float>& bestcostsR, VECBITMAP<float>& dsiR, VECBITMAP<unsigned char>& imR,
-	int iter, int sign)
-{
-	int xstart, xend, xchange, ystart, yend, ychange;
-	if (iter % 2 == 0) {
-		xstart = 0;  xend = ncols;  xchange = +1;
-		ystart = 0;  yend = nrows;  ychange = +1;
-	}
-	else {
-		xstart = ncols - 1;  xend = -1;  xchange = -1;
-		ystart = nrows - 1;  yend = -1;  ychange = -1;
-	}
-
-	float weights[patch_w *patch_w];
-
-	for (int y = ystart; y != yend; y += ychange) {
-		for (int x = xstart; x != xend; x += xchange) {
-
-			VECBITMAP<float> wL = ComputePatchWeights(y, x, imL, weights);
-
-			// Spatial Propagation
-			int qy = y - ychange, qx = x;
-			if (InBound(qy, qx)) {
-				Plane coeff_try = coeffsL[qy][qx];
-				ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, dsiL, wL);
-			}
-
-			qy = y; qx = x - xchange;
-			if (InBound(qy, qx)) {
-				Plane coeff_try = coeffsL[qy][qx];
-				ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, dsiL, wL);
-			}
-
-			// Random Search
-			float radius_z = dmax / 2.0f;
-			float radius_n = 1.0f;
-			while (radius_z >= 0.1) {
-				Plane coeff_try = coeffsL[y][x].RandomSearch(y, x, radius_z, radius_n);
-				ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, dsiL, wL);
-				radius_z /= 2.0f;
-				radius_n /= 2.0f;
-			}
-
-			// View Propagation
-			Plane coeff_try = coeffsL[y][x].ReparametrizeInOtherView(y, x, sign, qy, qx);
-			if (0 <= qx && qx < ncols) {
-				VECBITMAP<float> wR = ComputePatchWeights(qy, qx, imR, weights);
 				ImproveGuess(qy, qx, coeffsR[qy][qx], bestcostsR[qy][qx], coeff_try, dsiR, wR);
 			}
 		}
@@ -376,6 +321,9 @@ void CrossCheck(VECBITMAP<float>& dispL, VECBITMAP<float>& dispR, VECBITMAP<bool
 
 void FillHole(int y, int x, VECBITMAP<bool>& valid, VECBITMAP<Plane>& coeffs)
 {
+	// This function fills the invalid pixel (y,x) by finding its nearst (left and right) 
+    // valid neighbors on the same scanline, and select the one with lower disparity.
+
 	int xL = x - 1, xR = x + 1, bestx = x;
 	while (!valid[y][xL] && 0 <= xL) {
 		xL--;
@@ -401,7 +349,7 @@ void FillHole(int y, int x, VECBITMAP<bool>& valid, VECBITMAP<Plane>& coeffs)
 	coeffs[y][x] = coeffs[y][bestx];
 }
 
-void WeightedMedianFilter(int yc, int xc, VECBITMAP<float>& disp, VECBITMAP<float>& weights, VECBITMAP<bool>& valid)
+void WeightedMedianFilter(int yc, int xc, VECBITMAP<float>& disp, VECBITMAP<float>& weights, VECBITMAP<bool>& valid, bool useInvalidPixels)
 {
 	std::vector<std::pair<float, float>> dw_pairs;
 
@@ -410,7 +358,7 @@ void WeightedMedianFilter(int yc, int xc, VECBITMAP<float>& disp, VECBITMAP<floa
 
 	for (int y = yb; y <= ye; y++) {
 		for (int x = xb; x <= xe; x++) {
-			if (valid[y][x]) {
+			if (useInvalidPixels || valid[y][x]) {
 				std::pair<float, float> dw(disp[y][x], weights[y - yc + patch_r][x - xc + patch_r]);
 				dw_pairs.push_back(dw);
 			}
@@ -439,54 +387,22 @@ void WeightedMedianFilter(int yc, int xc, VECBITMAP<float>& disp, VECBITMAP<floa
 	}
 }
 
-void WeightedMedianFilter(int yc, int xc, VECBITMAP<float>& disp, VECBITMAP<float>& weights)
+
+void PostProcess(
+	float *	weightsL,			float *weightsR, 
+	VECBITMAP<Plane>& coeffsL,	VECBITMAP<Plane>& coeffsR, 
+	VECBITMAP<float>& dispL,	VECBITMAP<float>& dispR)
 {
-	std::vector<std::pair<float, float>> dw_pairs;
+	// This function perform several times of weighted median filtering at each invalid position.
+	// weights of the neighborhood are set by exp(-||cp-cq|| / gamma), except in the last iteration,
+	// where the weights of invalid pixels are set to zero.
 
-	int yb = std::max(0, yc - patch_r), ye = std::min(nrows - 1, yc + patch_r);
-	int xb = std::max(0, xc - patch_r), xe = std::min(ncols - 1, xc + patch_r);
-
-	for (int y = yb; y <= ye; y++) {
-		for (int x = xb; x <= xe; x++) {
-			std::pair<float, float> dw(disp[y][x], weights[y - yc + patch_r][x - xc + patch_r]);
-			dw_pairs.push_back(dw);
-		}
-	}
-
-	std::sort(dw_pairs.begin(), dw_pairs.end());
-
-	float w = 0.f, wsum = 0.f;
-	for (int i = 0; i < dw_pairs.size(); i++) {
-		wsum += dw_pairs[i].second;
-	}
-
-	for (int i = 0; i < dw_pairs.size(); i++) {
-		w += dw_pairs[i].second;
-		if (w >= wsum / 2.f) {
-			// Note that this line can always be reached.
-			if (i > 0) {
-				disp[yc][xc] = (dw_pairs[i - 1].first + dw_pairs[i].first) / 2.f;
-			}
-			else {
-				disp[yc][xc] = dw_pairs[i].first;
-			}
-			break;
-		}
-	}
-}
-
-void PostProcess(float *weightsL, VECBITMAP<Plane>& coeffsL, VECBITMAP<float>& dispL,
-				 float *weightsR, VECBITMAP<Plane>& coeffsR, VECBITMAP<float>& dispR)
-{
-	//VECBITMAP<float> dispL(nrows, ncols), dispR(nrows, ncols);
+	VECBITMAP<bool> validL(nrows, ncols), validR(nrows, ncols);
 	PlaneMapToDisparityMap(coeffsL, dispL);
 	PlaneMapToDisparityMap(coeffsR, dispR);
 
-	VECBITMAP<bool> validL(nrows, ncols), validR(nrows, ncols);
-	CrossCheck(dispL, dispR, validL, validR);
-
-#ifdef DO_POSTPROCESS
 	// Hole filling
+	CrossCheck(dispL, dispR, validL, validR);
 	for (int y = 0; y < nrows; y++) {
 		for (int x = 0; x < ncols; x++) {
 			if (!validL[y][x]) {
@@ -498,215 +414,296 @@ void PostProcess(float *weightsL, VECBITMAP<Plane>& coeffsL, VECBITMAP<float>& d
 		}
 	}
 
-	PlaneMapToDisparityMap(coeffsL, dispL);
-	PlaneMapToDisparityMap(coeffsR, dispR);
+	// Weighted median filtering 
+	int maxround = 2; 
+	bool useInvalidPixels = true;
+	for (int round = 0; round < maxround; round++) {
 
-	for (int iter = 0; iter < 1; iter++) {
-
+		PlaneMapToDisparityMap(coeffsL, dispL);
+		PlaneMapToDisparityMap(coeffsR, dispR);
 		CrossCheck(dispL, dispR, validL, validR);
-		// Weighted median filtering
+
+		if (round + 1 == maxround) {
+			useInvalidPixels = false;
+		}
+
 		for (int y = 0; y < nrows; y++) {
-			if (y % 10 == 0) {
-				printf("median filtering row %d\n", y);
-			}
+			if (y % 10 == 0) { printf("median filtering row %d\n", y); }
 			for (int x = 0; x < ncols; x++) {
 				if (!validL[y][x]){
 					VECBITMAP<float> wL(patch_w, patch_w, 1, &weightsL[(y * ncols + x) * patch_w * patch_w]);
-					WeightedMedianFilter(y, x, dispL, wL);
+					WeightedMedianFilter(y, x, dispL, wL, validL, useInvalidPixels);
 				}
 				if (!validR[y][x]){
 					VECBITMAP<float> wR(patch_w, patch_w, 1, &weightsR[(y * ncols + x) * patch_w * patch_w]);
-					WeightedMedianFilter(y, x, dispR, wR);
+					WeightedMedianFilter(y, x, dispR, wR, validR, useInvalidPixels);
 				}
 			}
 		}
 	}
-
-	CrossCheck(dispL, dispR, validL, validR);
-	// Weighted median filtering
-	for (int y = 0; y < nrows; y++) {
-		if (y % 10 == 0) {
-			printf("median filtering row %d\n", y);
-		}
-		for (int x = 0; x < ncols; x++) {
-			if (!validL[y][x]){
-				VECBITMAP<float> wL(patch_w, patch_w, 1, &weightsL[(y * ncols + x) * patch_w * patch_w]);
-				WeightedMedianFilter(y, x, dispL, wL, validL);
-			}
-			if (!validR[y][x]){
-				VECBITMAP<float> wR(patch_w, patch_w, 1, &weightsR[(y * ncols + x) * patch_w * patch_w]);
-				WeightedMedianFilter(y, x, dispR, wR, validR);
-			}
-		}
-	}
-#endif
 }
 
-void RunPatchMatchStereo(VECBITMAP<unsigned char>& imL, VECBITMAP<float>& dsiL, VECBITMAP<Plane>& coeffsL, VECBITMAP<float>& dispL,
-						 VECBITMAP<unsigned char>& imR, VECBITMAP<float>& dsiR, VECBITMAP<Plane>& coeffsR, VECBITMAP<float>& dispR)
+void RunPatchMatchStereo(VECBITMAP<unsigned char>& imL, VECBITMAP<unsigned char>& imR, 
+						 VECBITMAP<float>& dsiL,		VECBITMAP<float>& dsiR,  
+						 VECBITMAP<float>& dispL,		VECBITMAP<float>& dispR)
 {
+	VECBITMAP<Plane> coeffsL(nrows, ncols), coeffsR(nrows, ncols);
 	VECBITMAP<float> bestcostsL(nrows, ncols), bestcostsR(nrows, ncols);
-	int tic, toc;
-	FILE *fid = NULL;
 
-#if defined(PRECOMPUTE_WEIGHTS)
+
+	int tic, toc;
+	// Precompute color weights to speed up
 	tic = clock();  printf("precomputing weights ...\n");
 	float *weightsL = PrecomputeWeights(imL);
 	float *weightsR = PrecomputeWeights(imR);
 	toc = clock();  printf("precomputing weights use %.2fs\n\n", (toc - tic) / 1000.f);
 
-	fid = fopen("weightsL.bin", "wb");
-	fwrite(weightsL, sizeof(float), nrows * ncols * patch_w * patch_w, fid);
-	fclose(fid);
-	fid = fopen("weightsR.bin", "wb");
-	fwrite(weightsR, sizeof(float), nrows * ncols * patch_w * patch_w, fid);
-	fclose(fid);
-#else
-	const int nw = nrows * ncols * patch_w * patch_w;
-	float *weightsL = new float[nw];
-	float *weightsR = new float[nw];
-	fid = fopen("weightsL.bin", "rb");
-	fread(weightsL, sizeof(float), nrows * ncols * patch_w * patch_w, fid);
-	fclose(fid);
-	fid = fopen("weightsR.bin", "rb");
-	fread(weightsR, sizeof(float), nrows * ncols * patch_w * patch_w, fid);
-	fclose(fid); 
-#endif
 
-
-#if  defined(DO_ITERATION)
 	// Random initialization
 	tic = clock();  printf("performing random init ...\n");
 	RandomInit(coeffsL, bestcostsL, dsiL, weightsL);
 	RandomInit(coeffsR, bestcostsR, dsiR, weightsR);
 	toc = clock();  printf("random init use %.2fs\n\n", (toc - tic) / 1000.f);
 
-	// iteration
+
+	// Iteration
 	for (int iter = 0; iter < maxiters; iter++) {
 
-#ifdef PRECOMPUTE_WEIGHTS
 		tic = clock();  printf("iter %d, scaning left view ...\n", iter);
-		ProcessView(coeffsL, bestcostsL, dsiL, weightsL,
-					coeffsR, bestcostsR, dsiR, weightsR,
-					iter, -1);
+		ProcessView(coeffsL, coeffsR, bestcostsL, bestcostsR, dsiL, dsiR, weightsL, weightsR, iter, -1);
 		toc = clock();  printf("%.2fs\n\n", (toc - tic) / 1000.f);
 
 		tic = clock();  printf("iter %d, scaning right view ...\n", iter);
-		ProcessView(coeffsR, bestcostsR, dsiR, weightsR,
-					coeffsL, bestcostsL, dsiL, weightsL,
-					iter, +1);
+		ProcessView(coeffsR, coeffsL, bestcostsR, bestcostsL, dsiR, dsiL, weightsR, weightsL, iter, +1);
 		toc = clock();  printf("%.2fs\n\n", (toc - tic) / 1000.f);
-#else
-		tic = clock();  printf("iter %d, scaning left view ...\n", iter);
-		ProcessView2(coeffsL, bestcostsL, dsiL, imL,
-					 coeffsR, bestcostsR, dsiR, imR,
-					 iter, -1);
-		toc = clock();  printf("%.2fs\n\n", (toc - tic) / 1000.f);
-
-		tic = clock();  printf("iter %d, scaning right view ...\n", iter);
-		ProcessView2(coeffsR, bestcostsR, dsiR, imR,
-					 coeffsL, bestcostsL, dsiL, imL,
-					 iter, +1);
-		toc = clock();  printf("%.2fs\n\n", (toc - tic) / 1000.f);
-#endif
 	}
-#endif
 
-#ifdef DO_ITERATION
-	fid = fopen("coeffsL.bin", "wb");
-	fwrite(coeffsL.data, sizeof(Plane), nrows * ncols, fid);
-	fclose(fid);
-	fid = fopen("coeffsR.bin", "wb");
-	fwrite(coeffsR.data, sizeof(Plane), nrows * ncols, fid);
-	fclose(fid);
-#else
-	fid = fopen("coeffsL.bin", "rb");
-	fread(coeffsL.data, sizeof(Plane), nrows * ncols, fid);
-	fclose(fid);
-	fid = fopen("coeffsR.bin", "rb");
-	fread(coeffsR.data, sizeof(Plane), nrows * ncols, fid);
-	fclose(fid);
-#endif
+	printf("g_improve_cnt: %d\n", g_improve_cnt);
 
 
-	tic = clock();  printf("POST PROCESSING...\n");	
-	PostProcess(weightsL, coeffsL, dispL, weightsR, coeffsR, dispR);
-	toc = clock();  printf("%.2fs\n\n", (toc - tic) / 1000.f); 
+	// Post processing
+	tic = clock();  printf("POST PROCESSING...\n");
+	PostProcess(weightsL, weightsR, coeffsL, coeffsR, dispL, dispR);
+	toc = clock();  printf("%.2fs\n\n", (toc - tic) / 1000.f);
+
 
 	if (!weightsL) delete[] weightsL;
 	if (!weightsR) delete[] weightsR;
-
-	printf("g_improve_cnt: %d\n", g_improve_cnt);
 }
 
 
+using namespace std;
+using namespace cv;
+
+
+
+unsigned hamdist(long long x, long long  y)
+{
+	int dist = 0;
+	long long val = x ^ y; 
+	while (val) {
+		++dist;
+		val &= val - 1;
+	}
+	return dist;
+}
+
+VECBITMAP<long long> ComputeCensusImage(VECBITMAP<unsigned char> im)
+{
+	int vpad = 3, hpad = 4;
+	VECBITMAP<long long> census(nrows, ncols);
+	memset(census.data, 0, nrows * ncols * sizeof(long long));
+
+	for (int yc = 0; yc < nrows; yc++) {
+		for (int xc = 0; xc < ncols; xc++) {
+
+			int uu = std::max(yc - vpad, 0);
+			int dd = std::min(yc + vpad, nrows - 1);
+			int ll = std::max(xc - hpad, 0);
+			int rr = std::min(xc + hpad, ncols - 1);
+
+			int idx = 0;
+			long long feature = 0;
+			unsigned char center = im[yc][xc];
+
+			for (int y = uu; y <= dd; y++) {
+				for (int x = ll; x <= rr; x++) {
+					feature |= ((long long)(im[y][x] > center) << idx);
+					idx++;
+				}
+			}
+
+			census[yc][xc] = feature;
+		}
+	}
+
+	return census;
+}
+
+VECBITMAP<float> ComputeCensusTensor(VECBITMAP<unsigned char>& imL, VECBITMAP<unsigned char>& imR, int sign)
+{
+	VECBITMAP<float> dsi(nrows, ncols, ndisps);
+	VECBITMAP<long long> censusL = ComputeCensusImage(imL);
+	VECBITMAP<long long> censusR = ComputeCensusImage(imR);
+
+	for (int y = 0; y < nrows; y++) {
+		for (int x = 0; x < ncols; x++) {
+			for (int d = 0; d < ndisps; d++) {
+				int xm = (x + sign*d + ncols) % ncols;
+				dsi.get(y, x)[d] = hamdist(censusL[y][x], censusR[y][xm]);
+			}
+		}
+	}
+	return dsi;
+}
+
+void EvaluateDisparity(VECBITMAP<float>& av_disp, const int grayScale, bool bValidOnly, float *badPixelRate, float *validPixelRate)
+{
+	typedef unsigned char BYTE;
+	const int width = ncols, height = nrows;
+	float count[3] = { 0, 0, 0 };
+	float *h_disp = av_disp.data;
+
+	*validPixelRate = 0;  badPixelRate[0] = 0; badPixelRate[1] = 0; badPixelRate[2] = 0;
+	cv::Mat disp(height, width, CV_8UC3), badOnALL(height, width, CV_8UC3), badOnOC(height, width, CV_8UC3), gray;
+	cv::cvtColor(g_L, gray, CV_BGR2GRAY);
+
+	for (int y = 0; y < height; y++)
+	{
+		for (int x = 0; x < width; x++)
+		{
+			count[0] += (g_OC.at<cv::Vec3b>(y, x)[0] == 255);
+			count[1] += (g_ALL.at<cv::Vec3b>(y, x)[0] == 255);
+			count[2] += (g_DISC.at<cv::Vec3b>(y, x)[0] == 255);
+
+			BYTE g = gray.at<BYTE>(y, x);
+			badOnALL.at<cv::Vec3b>(y, x) = cv::Vec3b(g, g, g);
+			badOnOC.at<cv::Vec3b>(y, x) = cv::Vec3b(g, g, g);
+			if (h_disp[y * width + x] >= 0)
+			{
+				(*validPixelRate)++;
+
+				disp.at<cv::Vec3b>(y, x) = cv::Vec3b(h_disp[y * width + x], h_disp[y * width + x], h_disp[y * width + x]);
+				float diff = abs(h_disp[y * width + x] * grayScale - g_GT.at<cv::Vec3b>(y, x)[0]);
+				if (g_OC.at<cv::Vec3b>(y, x)[0] == 255 && diff > grayScale)	//non occlusion
+				{
+					badPixelRate[0]++;					
+					badOnOC.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 0, 255);
+				}
+				if (g_ALL.at<cv::Vec3b>(y, x)[0] == 255 && diff > grayScale)										//all
+				{
+					badPixelRate[1]++;
+					badOnALL.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 0, 255);
+				}
+				if (g_DISC.at<cv::Vec3b>(y, x)[0] == 255 && diff > grayScale)	//dis-continuous region
+				{
+					badPixelRate[2]++;
+				}				
+				//disp.at<cv::Vec3b>(y, x) = disp.at<cv::Vec3b>(y, x) * grayScale;
+				disp.at<cv::Vec3b>(y, x) = cv::Vec3b(h_disp[y * width + x] * grayScale, h_disp[y * width + x] * grayScale, h_disp[y * width + x] * grayScale);
+			}
+			else
+			{
+				if (!bValidOnly)
+				{
+					badPixelRate[0]++; badPixelRate[1]++; badPixelRate[2]++;
+				}
+				badOnALL.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 255, 0);
+				badOnOC.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 255, 0);
+				disp.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 255, 0);
+			}
+			if (g_OC.at<cv::Vec3b>(y, x)[0] == 0)	//draw occlusion region
+			{
+				badOnOC.at<cv::Vec3b>(y, x) = cv::Vec3b(255, 0, 0);
+			}
+			if (g_ALL.at<cv::Vec3b>(y, x)[0] == 0)	//draw occlusion region
+			{
+				badOnALL.at<cv::Vec3b>(y, x) = cv::Vec3b(255, 0, 0);
+			}		
+		}
+	}
+	
+	//free(h_disp);
+	for (int i = 0; i < 3; i++)
+	{
+		badPixelRate[i] /= count[i];
+	}
+	*validPixelRate = (*validPixelRate) / (float) (width * height);
+	printf("validPixelRate: %f%%, badPixelRate: %f%%, %f%%, %f%%\n",
+		*validPixelRate * 100.0f, badPixelRate[0] * 100.0f, badPixelRate[1] * 100.0f, badPixelRate[2] * 100.0f);
+	if (1)
+	{
+		cv::Mat compareImg(height * 2, width * 3, CV_8UC3);
+		cv::Mat outImg1 = compareImg(cv::Rect(0, 0, width, height)),
+			outImg2 = compareImg(cv::Rect(width, 0, width, height)),
+			outImg3 = compareImg(cv::Rect(0, height, width, height)),
+			outImg4 = compareImg(cv::Rect(width, height, width, height)),
+			outImg5 = compareImg(cv::Rect(width * 2, 0, width, height)),
+			outImg6 = compareImg(cv::Rect(width * 2, height, width, height));
+		g_GT.copyTo(outImg1);	disp.copyTo(outImg2);
+		/*g_segments.copyTo(outImg3);*/	badOnOC.copyTo(outImg4);
+		g_L.copyTo(outImg5);	badOnALL.copyTo(outImg6);
+		cv::imwrite("d:\\disparity.png", disp);
+		cv::imwrite("d:\\badOnALL.png", badOnALL);
+		cv::imwrite("d:\\badOnOC.png", badOnOC);
+		cv::imshow("disparity", compareImg);
+
+		//g_height = height; g_width = width;
+		//g_stereo = compareImg;
+		//g_ldisp = disp;
+		//g_grayScale = grayScale;
+		//cv::setMouseCallback("disparity", on_mouse);
+
+		cv::waitKey(0);
+	}
+}
 
 int main()
 {
-	nrows = 375;
-	ncols = 450;
-	ndisps = 60;
-	dmax = ndisps - 1;
+	int id = 2;
 
+	std::string folders[] = { "tsukuba/", "venus/", "teddy/", "cones/" };
+	const int scales[] = { 16, 8, 4, 4 };
+	const int drange[] = { 16, 20, 60, 60 };
+	scale  = scales[id];
+    ndisps = drange[id];
+	dmax   = ndisps - 1;
+
+	Mat cvimL = imread(folders[id] + "im2.png");
+	Mat cvimR = imread(folders[id] + "im6.png");
+	Mat cvgrayL, cvgrayR;
+	cvtColor(cvimL, cvgrayL, CV_BGR2GRAY);
+	cvtColor(cvimR, cvgrayR, CV_BGR2GRAY);
+
+	nrows = cvimL.rows;
+	ncols = cvimL.cols;
+
+	VECBITMAP<unsigned char> imL(nrows, ncols, 3, cvimL.data);
+	VECBITMAP<unsigned char> imR(nrows, ncols, 3, cvimR.data);
+	VECBITMAP<unsigned char> grayL(nrows, ncols, 1, cvgrayL.data);
+	VECBITMAP<unsigned char> grayR(nrows, ncols, 1, cvgrayR.data);
+
+	VECBITMAP<float> dsiL = ComputeCensusTensor(grayL, grayR, -1);
+	VECBITMAP<float> dsiR = ComputeCensusTensor(grayR, grayL, +1);
+	VECBITMAP<float> dispL(nrows, ncols);
+	VECBITMAP<float> dispR(nrows, ncols);
+
+
+#if 1
+	RunPatchMatchStereo(imL, imR, dsiL, dsiR, dispL, dispR);
+#else
+	WinnerTakesAll(dsiL, dispL);
+	WinnerTakesAll(dsiR, dispR);
+#endif
 	
+	g_L = cv::imread(folders[id] + "im2.png");
+	g_GT = cv::imread(folders[id] + "disp2.png");
+	g_OC = cv::imread(folders[id] + "nonocc.png");
+	g_ALL = cv::imread(folders[id] + "all.png");
+	g_DISC = cv::imread(folders[id] + "disc.png");
 
-	float *pdispL = new float[nrows * ncols];
-	float *pdispR = new float[nrows * ncols];
-	float *pdsiL = new float[nrows * ncols * ndisps];
-	float *pdsiR = new float[nrows * ncols * ndisps];
-	unsigned char *pimL = new unsigned char[nrows * ncols * 3];
-	unsigned char *pimR = new unsigned char[nrows * ncols * 3];
+	float badPixelRate[3], validPixelRate[1];
+	EvaluateDisparity(dispL, scale, false, badPixelRate, validPixelRate);
 
-	FILE *fid = NULL;
-	fid = fopen("imL.bin", "rb");
-	fread(pimL, sizeof(unsigned char), nrows * ncols * 3, fid);
-	fclose(fid);
-	fid = fopen("imR.bin", "rb");
-	fread(pimR, sizeof(unsigned char), nrows * ncols * 3, fid);
-	fclose(fid);
-	fid = fopen("dsiL.bin", "rb");
-	fread(pdsiL, sizeof(float), nrows * ncols * ndisps, fid);
-	fclose(fid);
-	fid = fopen("dsiR.bin", "rb");
-	fread(pdsiR, sizeof(float), nrows * ncols * ndisps, fid);
-	fclose(fid);
-
-	int maxidx = 0, tensorsize = nrows * ncols * ndisps;
-	for (int i = 0; i < ndisps; i++) {
-		if (pdsiL[i] > pdsiL[maxidx]) {
-			maxidx = i;
-		}
-	}
-	//BAD_PLANE_PENALTY = 3 * pdsiL[maxidx];
-	BAD_PLANE_PENALTY = 10;
-
-	VECBITMAP<unsigned char> imL(nrows, ncols, 3, pimL);
-	VECBITMAP<unsigned char> imR(nrows, ncols, 3, pimR);
-
-	VECBITMAP<float> dispL(nrows, ncols, 1, pdispL);
-	VECBITMAP<float> dispR(nrows, ncols, 1, pdispR);
-
-	VECBITMAP<float> dsiL(nrows, ncols, ndisps, pdsiL);
-	VECBITMAP<float> dsiR(nrows, ncols, ndisps, pdsiR);
-
-	VECBITMAP<Plane> coeffsL(nrows, ncols);
-	VECBITMAP<Plane> coeffsR(nrows, ncols);
-
-	RunPatchMatchStereo(imL, dsiL, coeffsL, dispL, imR, dsiR, coeffsR, dispR);
-	
-	// Extract disparities
-	//PlaneMapToDisparityMap(coeffsL, dispL);
-	//PlaneMapToDisparityMap(coeffsR, dispR);
-
-
-
-	fid = fopen("dispL.bin", "wb");
-	fwrite(pdispL, sizeof(float), nrows * ncols, fid);
-	fclose(fid);
-	fid = fopen("dispR.bin", "wb");
-	fwrite(pdispR, sizeof(float), nrows * ncols, fid);
-	fclose(fid);
-
-	delete[] pdispL, pdispR, pdsiL, pdsiR, pimL, pimR;
 	return 0;
 }
