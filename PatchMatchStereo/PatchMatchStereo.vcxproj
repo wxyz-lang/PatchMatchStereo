@@ -89,7 +89,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>D:\code\opencv\build\include;$(IncludePath)</IncludePath>
+    <IncludePath>D:\code\opencv\build\include;C:\Program Files\MATLAB\R2012b\extern\include;$(IncludePath)</IncludePath>
     <LibraryPath>$(LibraryPath);D:\code\opencv\build\x64\vc12\lib</LibraryPath>
     <ExcludePath>$(ExcludePath)</ExcludePath>
     <ExecutablePath>$(ExecutablePath);D:\code\opencv\build\x64\vc12\bin</ExecutablePath>
@@ -165,7 +165,16 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\CZStereo\mexSimplexPropagation.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="NelderMead.cpp" />
+    <ClCompile Include="PatchMatchStereo.cpp" />
+    <ClCompile Include="SLIC.cpp">
+      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Program Files\MATLAB\R2012b\extern\include</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="SLIC.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
