@@ -34,11 +34,13 @@
 #endif
 
 
+#define USE_OPENMP
 //#define FRONTAL_PARALLEL_ONLY
 //#define LOAD_RESULT_FROM_LAST_RUN
 //#define DO_POST_PROCESSING
 //#define USE_SUBPIXEL_MATCHING_COST
 //#define USE_NELDERMEAD_OPT
+
 
 
 // Gobal variables
@@ -49,21 +51,23 @@ static int			g_improve_cnt = 0;
 
 static const int	patch_w		= 35;
 static const int	patch_r		= 17;
-static const int	maxiters	= 3;
+static const int	maxiters	= 2;
 static const float  alpha		= 0.9;
-static const float	gamma		= 10;
+static const float	gamma		= 30;
 static const double	tau_col		= 10;
 static const double tau_grad	= 2;
 
-static const int id = 2;
-static const std::string folders[] = { "tsukuba/", "venus/", "teddy/", "cones/" };
-static const int scales[]	= { 16, 8, 4, 4 };
-static const int drange[]	= { 16, 20, 60, 60 };
+static const int id = 4;
+static const std::string folders[] = { "tsukuba/", "venus/", "teddy/", "cones/", "Bowling2/", "Baby1/" };
+static const int scales[]	= { 16, 8, 4, 4, 3, 3 };
+static const int drange[]	= { 16, 20, 60, 60, 70, 70 };
 static const int scale		= scales[id];
 static const int ndisps		= drange[id];
 static const int dmax		= ndisps - 1;
 
 cv::Mat g_L, g_OC, g_ALL, g_DISC, g_GT;
+cv::Mat g_stereo, g_mydisp;
+
 
 using namespace std;
 using namespace cv;
@@ -134,7 +138,7 @@ public:
 	bool is_shared;
 	T *get(int y, int x) { return &data[(y*w + x)*n]; }		/* Get patch (y, x). */
 	T *line_n1(int y) { return &data[y*w]; }				/* Get line y assuming n=1. */
-	VECBITMAP() { }
+	VECBITMAP() { data = NULL; }
 	VECBITMAP(const VECBITMAP& obj)
 	{
 		// This constructor is very necessary for returning an object in a function,
@@ -150,8 +154,16 @@ public:
 		if (!data_) { data = new T[w*h*n]; is_shared = false; }
 		else	    { data = data_;        is_shared = true; }
 	}
+	VECBITMAP& operator=(const VECBITMAP& m)
+	{
+		w = m.w; h = m.h; n = m.n; is_shared = m.is_shared;
+		if (m.is_shared) { data = m.data; }
+		else { data = new T[w*h*n]; memcpy(data, m.data, w*h*n*sizeof(T)); }
+		return *this;
+	}
 	~VECBITMAP() { if (!is_shared) delete[] data; }
 	T *operator[](int y) { return &data[y*w]; }
+
 	void SaveToBinaryFile(std::string filename)
 	{
 		FILE *fid = fopen(filename.c_str(), "wb");
@@ -168,10 +180,39 @@ public:
 	}
 };
 
-
+VECBITMAP<Plane> g_coeffsL, g_coeffsR;
+VECBITMAP<float> g_colgradL, g_colgradR;
+VECBITMAP<unsigned char> g_imL, g_imR;
 
 
 inline bool InBound(float y, float x) { return 0 <= y && y < nrows && 0 <= x && x < ncols; }
+
+VECBITMAP<float> ComputeLocalPatchWeights(int yc, int xc, VECBITMAP<unsigned char>& img)
+{
+	VECBITMAP<float> ret(patch_w, patch_w);
+	float *w = ret.data;
+	memset(w, 0, patch_w * patch_w * sizeof(float));
+	unsigned char *rgb1 = img.get(yc, xc);
+	unsigned char *rgb2 = NULL;
+
+	int yb = std::max(0, yc - patch_r), ye = std::min(nrows - 1, yc + patch_r);
+	int xb = std::max(0, xc - patch_r), xe = std::min(ncols - 1, xc + patch_r);
+
+	#pragma omp parallel for
+	for (int y = yb; y <= ye; y++) {
+		for (int x = xb; x <= xe; x++) {
+			rgb2 = img.get(y, x);
+			float cost = std::abs((float)rgb1[0] - (float)rgb2[0])
+				+ std::abs((float)rgb1[1] - (float)rgb2[1])
+				+ std::abs((float)rgb1[2] - (float)rgb2[2]);
+			w[(y - yc + patch_r) * patch_w + (x - xc + patch_r)] = cost;
+		}
+	}
+	for (int i = 0; i < patch_w * patch_w; i++) {
+		w[i] = exp(-w[i] / gamma);
+	}
+	return ret;
+}
 
 float *PrecomputeWeights(VECBITMAP<unsigned char>& im)
 {
@@ -188,6 +229,7 @@ float *PrecomputeWeights(VECBITMAP<unsigned char>& im)
 		}
 	}
 
+	#pragma omp parallel for
 	for (int yc = 0; yc < nrows; yc++) {
 		for (int xc = 0; xc < ncols; xc++) {
 
@@ -324,6 +366,7 @@ void RandomInit(VECBITMAP<Plane>& coeffs, VECBITMAP<double>& bestcosts, VECBITMA
 		}
 	}
 
+	#pragma omp parallel for
 	for (int y = 0; y < nrows; y++) {
 		for (int x = 0; x < ncols; x++) {
 			bestcosts[y][x] = ComputePlaneCost(y, x, coeffs[y][x], dsi, VECBITMAP<float>(patch_w, patch_w, 1, &weights[(y*ncols + x) * patch_w * patch_w]));
@@ -362,6 +405,7 @@ void RandomInit(VECBITMAP<Plane>& coeffs, VECBITMAP<double>& bestcosts, VECBITMA
 		}
 	}
 
+	#pragma omp parallel for
 	for (int y = 0; y < nrows; y++) {
 		for (int x = 0; x < ncols; x++) {
 			bestcosts[y][x] = ComputePlaneCost(y, x, coeffs[y][x], colgradL, colgradR, 
@@ -443,6 +487,83 @@ float nm_compute_plane_cost_subpixel(float *abc, int n = 3)
 	return ComputePlaneCost(nm_opt_struct.yc, nm_opt_struct.xc, coeff, *nm_opt_struct.colgradL, *nm_opt_struct.colgradR, *nm_opt_struct.w, nm_opt_struct.sign);
 }
 
+void ProcessViewDelegate(int y, int x,
+	VECBITMAP<Plane>& coeffsL,		VECBITMAP<Plane>& coeffsR,
+	VECBITMAP<double>& bestcostsL,	VECBITMAP<double>& bestcostsR,
+	VECBITMAP<float>& dsiL,			VECBITMAP<float>& dsiR,
+	float* weightsL,				float* weightsR,
+	int iter,
+	int sign)
+{
+	int xchange, ychange;
+	if (iter % 2 == 0)  xchange = ychange = +1;
+	else				xchange = ychange = -1;
+	const int dx[] = { -1, 0, +1, 0 };
+	const int dy[] = { 0, -1, 0, +1 };
+	float nm_opt_x[3 * 4];
+
+
+	VECBITMAP<float> wL(patch_w, patch_w, 1, &weightsL[(y*ncols + x) * patch_w * patch_w]);
+#ifndef USE_NELDERMEAD_OPT
+	// Spatial Propagation
+	int qy = y - ychange, qx = x;
+	if (InBound(qy, qx)) {
+		Plane coeff_try = coeffsL[qy][qx];
+		ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, dsiL, wL);
+	}
+
+	qy = y; qx = x - xchange;
+	if (InBound(qy, qx)) {
+		Plane coeff_try = coeffsL[qy][qx];
+		ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, dsiL, wL);
+	}
+	//int qx, qy;
+	//for (int dir = 0; dir < 4; dir++) {
+	//	qy = y + dy[dir];
+	//	qx = x + dx[dir];
+	//	if (InBound(qy, qx)) {
+	//		Plane coeff_try = coeffsL[qy][qx];
+	//		ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, dsiL, wL);
+	//	}
+	//}
+
+	// Random Search
+	float radius_z = dmax / 2.0f;
+	float radius_n = 1.0f;
+	while (radius_z >= 0.1) {
+		Plane coeff_try = coeffsL[y][x].RandomSearch(y, x, radius_z, radius_n);
+		ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, dsiL, wL);
+		radius_z /= 2.0f;
+		radius_n /= 2.0f;
+	}
+
+	// View Propagation
+	Plane coeff_try = coeffsL[y][x].ReparametrizeInOtherView(y, x, sign, qy, qx);
+	if (0 <= qx && qx < ncols) {
+		VECBITMAP<float> wR(patch_w, patch_w, 1, &weightsR[(qy*ncols + qx) * patch_w * patch_w]);
+		ImproveGuess(qy, qx, coeffsR[qy][qx], bestcostsR[qy][qx], coeff_try, dsiR, wR);
+	}
+#else
+
+	for (int dir = 0; dir < 4; dir++) {
+		int qy = y + dy[dir];
+		int qx = x + dx[dir];
+		if (InBound(qy, qx)) {
+			coeffsL[qy][qx].GetAbc(nm_opt_x + 3 * dir);
+		}
+		else {
+			RandomAbc(nm_opt_x + 3 * dir, qy, qx);
+		}
+	}
+	nm_opt_struct.yc = y;
+	nm_opt_struct.xc = x;
+	nm_opt_struct.w = &wL;
+	nm_opt_struct.dsi = &dsiL;
+	NelderMeadOptimize(nm_opt_x, nm_compute_plane_cost, 5);
+	coeffsL[y][x].SetAbc(nm_opt_x);
+#endif
+}
+
 void ProcessView(
 	VECBITMAP<Plane>& coeffsL,		VECBITMAP<Plane>& coeffsR, 
 	VECBITMAP<double>& bestcostsL,	VECBITMAP<double>& bestcostsR,
@@ -451,85 +572,112 @@ void ProcessView(
 	int iter, 
 	int sign)
 {
-	int xstart, xend, xchange, ystart, yend, ychange;
 	if (iter % 2 == 0) {
-		xstart = 0;  xend = ncols;  xchange = +1;
-		ystart = 0;  yend = nrows;  ychange = +1;
+		#pragma omp parallel for
+		for (int y = 0; y < nrows; y++) {
+			for (int x = 0; x < ncols; x++) {
+				ProcessViewDelegate(y, x, coeffsL, coeffsR, bestcostsL, bestcostsR, dsiL, dsiR, weightsL, weightsR, iter, sign);
+			}
+		}
 	}
 	else {
-		xstart = ncols - 1;  xend = -1;  xchange = -1;
-		ystart = nrows - 1;  yend = -1;  ychange = -1;
+		#pragma omp parallel for
+		for (int y = nrows - 1; y >= 0; y--) {
+			for (int x = ncols - 1; x >= 0; x--) {
+				ProcessViewDelegate(y, x, coeffsL, coeffsR, bestcostsL, bestcostsR, dsiL, dsiR, weightsL, weightsR, iter, sign);
+			}
+		}
 	}
+}
 
-	const int dx[] = { -1, 0, +1, 0 }; 
+void ProcessViewSubpixelDelegate(int y, int x,
+	VECBITMAP<Plane>& coeffsL,		VECBITMAP<Plane>& coeffsR,
+	VECBITMAP<double>& bestcostsL,	VECBITMAP<double>& bestcostsR,
+	VECBITMAP<float>& colgradL,		VECBITMAP<float>& colgradR,
+	float* weightsL,				float* weightsR,
+	int iter,
+	int sign)
+{
+	int xchange, ychange;
+	if (iter % 2 == 0)  xchange = ychange = +1;
+	else				xchange = ychange = -1;
+
+	const int dx[] = { -1, 0, +1, 0 };
 	const int dy[] = { 0, -1, 0, +1 };
 	float nm_opt_x[3 * 4];
 
 
-	for (int y = ystart; y != yend; y += ychange) {
-		for (int x = xstart; x != xend; x += xchange) {
-
-			VECBITMAP<float> wL(patch_w, patch_w, 1, &weightsL[(y*ncols + x) * patch_w * patch_w]);
+	VECBITMAP<float> wL(patch_w, patch_w, 1, &weightsL[(y*ncols + x) * patch_w * patch_w]);
 #ifndef USE_NELDERMEAD_OPT
-			// Spatial Propagation
-			//int qy = y - ychange, qx = x;
-			//if (InBound(qy, qx)) {
-			//	Plane coeff_try = coeffsL[qy][qx];
-			//	ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, dsiL, wL);
-			//}
+	// Spatial Propagation
+	int qy = y - ychange, qx = x;
+	if (InBound(qy, qx)) {
+		Plane coeff_try = coeffsL[qy][qx];
+		ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, colgradL, colgradR, wL, sign);
+	}
 
-			//qy = y; qx = x - xchange;
-			//if (InBound(qy, qx)) {
-			//	Plane coeff_try = coeffsL[qy][qx];
-			//	ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, dsiL, wL);
-			//}
-			int qx, qy;
-			for (int dir = 0; dir < 4; dir++) {
-				qy = y + dy[dir];
-				qx = x + dx[dir];
-				if (InBound(qy, qx)) {
-					Plane coeff_try = coeffsL[qy][qx];
-					ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, dsiL, wL);
-				}
-			}
+	qy = y; qx = x - xchange;
+	if (InBound(qy, qx)) {
+		Plane coeff_try = coeffsL[qy][qx];
+		ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, colgradL, colgradR, wL, sign);
+	}
 
-			// Random Search
-			float radius_z = dmax / 2.0f;
-			float radius_n = 1.0f;
-			while (radius_z >= 0.1) {
-				Plane coeff_try = coeffsL[y][x].RandomSearch(y, x, radius_z, radius_n);
-				ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, dsiL, wL);
-				radius_z /= 2.0f;
-				radius_n /= 2.0f;
-			}
+	//int qx, qy;
+	//for (int dir = 0; dir < 4; dir++) {
+	//	qy = y + dy[dir];
+	//	qx = x + dx[dir];
+	//	if (InBound(qy, qx)) {
+	//		Plane coeff_try = coeffsL[qy][qx];
+	//		ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, colgradL, colgradR, wL, sign);
+	//	}
+	//}
 
-			// View Propagation
-			Plane coeff_try = coeffsL[y][x].ReparametrizeInOtherView(y, x, sign, qy, qx);
-			if (0 <= qx && qx < ncols) {
-				VECBITMAP<float> wR(patch_w, patch_w, 1, &weightsR[(qy*ncols + qx) * patch_w * patch_w]);
-				ImproveGuess(qy, qx, coeffsR[qy][qx], bestcostsR[qy][qx], coeff_try, dsiR, wR);
-			}
+	// Random Search
+	float radius_z = dmax / 2.0f;
+	float radius_n = 1.0f;
+	while (radius_z >= 0.1) {
+		Plane coeff_try = coeffsL[y][x].RandomSearch(y, x, radius_z, radius_n);
+		ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, colgradL, colgradR, wL, sign);
+		radius_z /= 2.0f;
+		radius_n /= 2.0f;
+	}
+
+	// View Propagation
+	Plane coeff_try = coeffsL[y][x].ReparametrizeInOtherView(y, x, sign, qy, qx);
+	if (0 <= qx && qx < ncols) {
+		VECBITMAP<float> wR(patch_w, patch_w, 1, &weightsR[(qy*ncols + qx) * patch_w * patch_w]);
+		ImproveGuess(qy, qx, coeffsR[qy][qx], bestcostsR[qy][qx], coeff_try, colgradR, colgradL, wR, -sign);
+	}
 #else
 
-			for (int dir = 0; dir < 4; dir++) {
-				int qy = y + dy[dir];
-				int qx = x + dx[dir];
-				if (InBound(qy, qx)) {
-					coeffsL[qy][qx].GetAbc(nm_opt_x + 3 * dir);
-				}
-				else {
-					RandomAbc(nm_opt_x + 3 * dir, qy, qx);
-				}
-			}
-			nm_opt_struct.yc = y;
-			nm_opt_struct.xc = x;
-			nm_opt_struct.w = &wL;
-			nm_opt_struct.dsi = &dsiL;
-			NelderMeadOptimize(nm_opt_x, nm_compute_plane_cost, 5);
-			coeffsL[y][x].SetAbc(nm_opt_x);
-#endif
+	for (int dir = 0; dir < 4; dir++) {
+		int qy = y + dy[dir];
+		int qx = x + dx[dir];
+		if (InBound(qy, qx)) {	// FIXME: only propagate from UP and left, RANDOM initialize other two vertices.
+			coeffsL[qy][qx].GetAbc(nm_opt_x + 3 * dir);
+		}
+		else {
+			RandomAbc(nm_opt_x + 3 * dir, qy, qx);
 		}
 	}
+
+	nm_opt_struct.yc = y;
+	nm_opt_struct.xc = x;
+	nm_opt_struct.w = &wL;
+	nm_opt_struct.sign = sign;
+
+	if (sign == -1) {
+		nm_opt_struct.colgradL = &colgradL;
+		nm_opt_struct.colgradR = &colgradR;
+	}
+	else {
+		nm_opt_struct.colgradL = &colgradR;
+		nm_opt_struct.colgradR = &colgradL;
+	}
+
+	NelderMeadOptimize(nm_opt_x, nm_compute_plane_cost_subpixel, 5);
+	coeffsL[y][x].SetAbc(nm_opt_x);
+#endif
 }
 
 void ProcessViewSubpixel(
@@ -540,94 +688,20 @@ void ProcessViewSubpixel(
 	int iter,
 	int sign)
 {
-	int xstart, xend, xchange, ystart, yend, ychange;
 	if (iter % 2 == 0) {
-		xstart = 0;  xend = ncols;  xchange = +1;
-		ystart = 0;  yend = nrows;  ychange = +1;
+		#pragma omp parallel for
+		for (int y = 0; y < nrows; y++) {
+			for (int x = 0; x < ncols; x++) {
+				ProcessViewSubpixelDelegate(y, x, coeffsL, coeffsR, bestcostsL, bestcostsR, colgradL, colgradR, weightsL, weightsR, iter, sign);
+			}
+		}
 	}
 	else {
-		xstart = ncols - 1;  xend = -1;  xchange = -1;
-		ystart = nrows - 1;  yend = -1;  ychange = -1;
-	}
-
-	const int dx[] = { -1, 0, +1, 0 };
-	const int dy[] = { 0, -1, 0, +1 };
-	float nm_opt_x[3 * 4];
-
-	for (int y = ystart; y != yend; y += ychange) {
-		for (int x = xstart; x != xend; x += xchange) {
-
-			VECBITMAP<float> wL(patch_w, patch_w, 1, &weightsL[(y*ncols + x) * patch_w * patch_w]);
-#ifndef USE_NELDERMEAD_OPT
-			// Spatial Propagation
-			int qy = y - ychange, qx = x;
-			if (InBound(qy, qx)) {
-				Plane coeff_try = coeffsL[qy][qx];
-				ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, colgradL, colgradR, wL, sign);
+		#pragma omp parallel for
+		for (int y = nrows - 1; y >= 0; y--) {
+			for (int x = ncols - 1; x >= 0; x--) {
+				ProcessViewSubpixelDelegate(y, x, coeffsL, coeffsR, bestcostsL, bestcostsR, colgradL, colgradR, weightsL, weightsR, iter, sign);
 			}
-
-			qy = y; qx = x - xchange;
-			if (InBound(qy, qx)) {
-				Plane coeff_try = coeffsL[qy][qx];
-				ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, colgradL, colgradR, wL, sign);
-			}
-
-			//int qx, qy;
-			//for (int dir = 0; dir < 4; dir++) {
-			//	qy = y + dy[dir];
-			//	qx = x + dx[dir];
-			//	if (InBound(qy, qx)) {
-			//		Plane coeff_try = coeffsL[qy][qx];
-			//		ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, colgradL, colgradR, wL, sign);
-			//	}
-			//}
-
-			// Random Search
-			float radius_z = dmax / 2.0f;
-			float radius_n = 1.0f;
-			while (radius_z >= 0.1) {
-				Plane coeff_try = coeffsL[y][x].RandomSearch(y, x, radius_z, radius_n);
-				ImproveGuess(y, x, coeffsL[y][x], bestcostsL[y][x], coeff_try, colgradL, colgradR, wL, sign);
-				radius_z /= 2.0f;
-				radius_n /= 2.0f;
-			}
-
-			//// View Propagation
-			//Plane coeff_try = coeffsL[y][x].ReparametrizeInOtherView(y, x, sign, qy, qx);
-			//if (0 <= qx && qx < ncols) {
-			//	VECBITMAP<float> wR(patch_w, patch_w, 1, &weightsR[(qy*ncols + qx) * patch_w * patch_w]);
-			//	ImproveGuess(qy, qx, coeffsR[qy][qx], bestcostsR[qy][qx], coeff_try, colgradR, colgradL, wR, -sign);
-			//}
-#else
-
-			for (int dir = 0; dir < 4; dir++) {
-				int qy = y + dy[dir];
-				int qx = x + dx[dir];
-				if (InBound(qy, qx)) {	// FIXME: only propagate from UP and left, RANDOM initialize other two vertices.
-					coeffsL[qy][qx].GetAbc(nm_opt_x + 3 * dir);
-				}
-				else {
-					RandomAbc(nm_opt_x + 3 * dir, qy, qx);
-				}
-			}
-
-			nm_opt_struct.yc = y;
-			nm_opt_struct.xc = x;
-			nm_opt_struct.w = &wL;
-			nm_opt_struct.sign = sign;
-
-			if (sign == -1) {
-				nm_opt_struct.colgradL = &colgradL;
-				nm_opt_struct.colgradR = &colgradR;
-			}
-			else {
-				nm_opt_struct.colgradL = &colgradR;
-				nm_opt_struct.colgradR = &colgradL;
-			}			
-			
-			NelderMeadOptimize(nm_opt_x, nm_compute_plane_cost_subpixel, 5);
-			coeffsL[y][x].SetAbc(nm_opt_x);
-#endif
 		}
 	}
 }
@@ -843,7 +917,7 @@ void RunPatchMatchStereo(VECBITMAP<unsigned char>& imL, VECBITMAP<unsigned char>
 	PostProcess(weightsL, weightsR, coeffsL, coeffsR, dispL, dispR);
 	toc = clock();  printf("%.2fs\n\n", (toc - tic) / 1000.f);
 
-
+	g_coeffsL = coeffsL;
 	if (!weightsL) delete[] weightsL;
 	if (!weightsR) delete[] weightsR;
 }
@@ -897,7 +971,7 @@ void RunPatchMatchStereoSubpixel(VECBITMAP<unsigned char>& imL, VECBITMAP<unsign
 	PostProcess(weightsL, weightsR, coeffsL, coeffsR, dispL, dispR);
 	toc = clock();  printf("%.2fs\n\n", (toc - tic) / 1000.f);
 
-
+	g_coeffsL = coeffsL;
 	if (!weightsL) delete[] weightsL;
 	if (!weightsR) delete[] weightsR;
 }
@@ -983,6 +1057,90 @@ VECBITMAP<float> ComputeAdgradientTensor(VECBITMAP<float>& colgradL, VECBITMAP<f
 	return dsi;
 }
 
+void prepareRect(int yc, int xc, cv::Rect& patchRect, cv::Rect& canvasRect)
+{
+	int yU = std::max(0, yc - patch_r);
+	int xL = std::max(0, xc - patch_r);
+	int yD = std::min(nrows - 1, yc + patch_r);
+	int xR = std::min(ncols - 1, xc + patch_r);
+	canvasRect = cv::Rect(xL, yU, xR - xL + 1, yD - yU + 1);
+	// From canvas coordinate to patch coordinate
+	patchRect = cv::Rect(xL - xc + patch_r, yU - yc + patch_r, xR - xL + 1, yD - yU + 1);
+}
+
+void on_mouse(int event, int x, int y, int flags, void *param)
+{
+
+	CvPoint left, right;
+	cv::Mat tmp;
+
+	if (event == CV_EVENT_MOUSEMOVE)
+	{
+		if (x >= ncols && x < 2 * ncols && y >= 0 && y < 2 * nrows)
+		{
+			tmp = g_stereo.clone();
+			left.x = x; left.y = y;
+			right.x = x + ncols; 	right.y = y;
+			cv::line(tmp, left, right, cv::Scalar(255, 0, 0, 1));
+
+			left.x = x; left.y = y;
+			right.x = x - ncols; 	right.y = y;
+			cv::line(tmp, left, right, cv::Scalar(255, 0, 0, 1));
+
+			cv::imshow("disparity", tmp);
+		}
+	}
+	if (event == CV_EVENT_RBUTTONDOWN)
+	{
+		if (x >= ncols && x < 3 * ncols)
+		{
+			tmp = g_stereo.clone();
+			x %= ncols; y %= nrows;
+			float gtDisp = g_GT.at<cv::Vec3b>(y, x)[0];
+			float myDisp = g_mydisp.at<cv::Vec3b>(y, x)[0];
+			printf("(%d, %d)->GT: %.1f, MINE: %.1f    ", y, x, gtDisp / scale, myDisp / scale);
+			printf("a = %.5f  b = %.5f  c = %.5f\n", g_coeffsL[y][x].a, g_coeffsL[y][x].b, g_coeffsL[y][x].c);
+
+			VECBITMAP<float> weights = ComputeLocalPatchWeights(y, x, g_imL);
+			float wsum = 0;  for (int i = 0; i < patch_w * patch_w; i++) wsum += weights.data[i];
+			float cost = ComputePlaneCost(y, x, g_coeffsL[y][x], g_colgradL, g_colgradR, weights, -1) / wsum;
+			printf("plane cost: %f\n", cost);
+
+			cv::Mat outImg1 = tmp(cv::Rect(0, 0, ncols, nrows)),
+				outImg2 = tmp(cv::Rect(ncols, 0, ncols, nrows)),
+				outImg3 = tmp(cv::Rect(0, nrows, ncols, nrows)),
+				outImg4 = tmp(cv::Rect(ncols, nrows, ncols, nrows)),
+				outImg5 = tmp(cv::Rect(ncols * 2, 0, ncols, nrows)),
+				outImg6 = tmp(cv::Rect(ncols * 2, nrows, ncols, nrows));
+			cv::Rect patchRect, canvasRect;
+			prepareRect(y, x, patchRect, canvasRect);
+
+			cv::Mat weightImg(patch_w, patch_w, CV_8UC3);
+			for (int y = 0; y < patch_w; y++) {
+				for (int x = 0; x < patch_w; x++) {
+					unsigned char w = weights[y][x] * 255.f;
+					weightImg.at<cv::Vec3b>(y, x) = cv::Vec3b(w, w, w);
+				}
+			}
+			(weightImg(patchRect)).copyTo(outImg5(canvasRect));
+
+			Plane coeff = g_coeffsL[y][x];
+			int yc = y, xc = x;
+			cv::Mat planeImg(patch_w, patch_w, CV_8UC3);
+			for (int y = 0; y < patch_w; y++) {
+				for (int x = 0; x < patch_w; x++) {
+					unsigned char d = scale * coeff.ToDisparity(y - patch_r + yc, x - patch_r + xc);
+					planeImg.at<cv::Vec3b>(y, x) = cv::Vec3b(d, d, d);
+				}
+			}
+			(planeImg(patchRect)).copyTo(outImg2(canvasRect));
+			cv::imshow("disparity", tmp);
+		}
+	}
+}
+
+
+
 void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh)
 {
 	float count[3] = { 0, 0, 0 };
@@ -1004,7 +1162,7 @@ void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh)
 			unsigned char d = (unsigned int)(scale * h_disp[y][x] + 0.5);
 			disp.at<cv::Vec3b>(y, x) = cv::Vec3b(d, d, d);
 
-			float diff = abs(disp.at<cv::Vec3b>(y, x)[0] - g_GT.at<cv::Vec3b>(y, x)[0]);
+			float diff = abs((float)disp.at<cv::Vec3b>(y, x)[0] - (float)g_GT.at<cv::Vec3b>(y, x)[0]);
 			if (g_OC.at<cv::Vec3b>(y, x)[0] == 255 && diff > scale * thresh) {
 				badPixelRate[0]++;
 				badOnOC.at<cv::Vec3b>(y, x) = cv::Vec3b(0, 0, 255);
@@ -1047,22 +1205,24 @@ void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh)
 		/*g_segments.copyTo(outImg3);*/	badOnOC.copyTo(outImg4);
 		g_L.copyTo(outImg5);	badOnALL.copyTo(outImg6);
 
-		cv::cvtColor(disp, disp, CV_RGB2GRAY);
+		//cv::cvtColor(disp, disp, CV_RGB2GRAY);
 		cv::imwrite(folders[id] + "disparity.png", disp);
 		cv::imwrite("d:\\disparity.png", disp);
 		cv::imwrite("d:\\badOnALL.png", badOnALL);
 		cv::imwrite("d:\\badOnOC.png", badOnOC);
+		
+
+		g_stereo = compareImg;
+		g_mydisp = disp;
+
 		cv::imshow("disparity", compareImg);
-
-		//g_height = height; g_width = width;
-		//g_stereo = compareImg;
-		//g_ldisp = disp;
-		//g_grayScale = grayScale;
-		//cv::setMouseCallback("disparity", on_mouse);
-
+		cv::setMouseCallback("disparity", on_mouse);	
 		cv::waitKey(0);
+
 	}
 }
+
+
 
 void TestSuperPixels()
 {
@@ -1129,7 +1289,9 @@ void PrepareColgradImages(cv::Mat& img, VECBITMAP<float>& colgrad)
 
 int main()
 {
-	
+#ifndef USE_OPENMP
+	omp_set_num_threads(1);
+#endif
 
 	Mat cvimL = imread(folders[id] + "im2.png");
 	Mat cvimR = imread(folders[id] + "im6.png");
@@ -1149,7 +1311,7 @@ int main()
 	PrepareColgradImages(cvimR, colgradR);
 
 #ifdef USE_SUBPIXEL_MATCHING_COST
-	
+
 	colgradL.SaveToBinaryFile("colgradL.bin");
 	colgradR.SaveToBinaryFile("colgradR.bin");
 
@@ -1165,21 +1327,28 @@ int main()
 
 	VECBITMAP<float> dsiL = ComputeAdgradientTensor(colgradL, colgradR, -1);
 	VECBITMAP<float> dsiR = ComputeAdgradientTensor(colgradR, colgradL, +1);
-	
+
 
 	RunPatchMatchStereo(imL, imR, dsiL, dsiR, dispL, dispR);
 #endif
 
-	
+
 
 	g_L = cv::imread(folders[id] + "im2.png");
 	g_GT = cv::imread(folders[id] + "disp2.png");
 	g_OC = cv::imread(folders[id] + "nonocc.png");
 	g_ALL = cv::imread(folders[id] + "all.png");
 	g_DISC = cv::imread(folders[id] + "disc.png");
+	g_colgradL = colgradL;
+	g_colgradR = colgradR;
+	g_imL = imL;
+	g_imR = imR;
 
-	//float badPixelRate[3], validPixelRate[1];
-	//EvaluateDisparity(dispL, scale, false, badPixelRate, validPixelRate);
+
+	//VECBITMAP<Plane> coeffsL(nrows, ncols);
+	//coeffsL.LoadFromBinaryFile(folders[id] + "coeffsL.bin");
+	//PlaneMapToDisparityMap(coeffsL, dispL);
+	//g_coeffsL = coeffsL;
 
 	EvaluateDisparity(dispL, 0.5);
 
