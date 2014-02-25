@@ -169,9 +169,7 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="NelderMead.cpp" />
     <ClCompile Include="PatchMatchStereo.cpp" />
-    <ClCompile Include="SLIC.cpp">
-      <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='Release|x64'">C:\Program Files\MATLAB\R2012b\extern\include</AdditionalIncludeDirectories>
-    </ClCompile>
+    <ClCompile Include="SLIC.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="SLIC.h" />

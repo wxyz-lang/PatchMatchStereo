@@ -6,13 +6,13 @@
 #include <ctime>
 #include <algorithm>
 #include <vector>
+#include <list>
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 
 #include <omp.h>
-
 #include "SLIC.h"
 
 #ifdef _DEBUG
@@ -37,7 +37,7 @@
 #define USE_OPENMP
 //#define FRONTAL_PARALLEL_ONLY
 //#define LOAD_RESULT_FROM_LAST_RUN
-//#define DO_POST_PROCESSING
+#define DO_POST_PROCESSING
 //#define USE_SUBPIXEL_MATCHING_COST
 //#define USE_NELDERMEAD_OPT
 
@@ -57,15 +57,15 @@ static const float	gamma		= 30;
 static const double	tau_col		= 10;
 static const double tau_grad	= 2;
 
-static const int id = 4;
+static const int folder_id = 5;
 static const std::string folders[] = { "tsukuba/", "venus/", "teddy/", "cones/", "Bowling2/", "Baby1/" };
 static const int scales[]	= { 16, 8, 4, 4, 3, 3 };
 static const int drange[]	= { 16, 20, 60, 60, 70, 70 };
-static const int scale		= scales[id];
-static const int ndisps		= drange[id];
+static const int scale		= scales[folder_id];
+static const int ndisps		= drange[folder_id];
 static const int dmax		= ndisps - 1;
 
-cv::Mat g_L, g_OC, g_ALL, g_DISC, g_GT;
+cv::Mat g_L, g_OC, g_ALL, g_DISC, g_GT, g_segments;
 cv::Mat g_stereo, g_mydisp;
 
 
@@ -97,6 +97,20 @@ struct Plane {
 		qx = x + sign * z;
 		qy = y;
 		return Plane(nx, ny, nz, qy, qx, z);
+	}
+	void RandomAssign()
+	{
+		const int RAND_HALF = RAND_MAX / 2;
+		float y = nrows / 2.f, x = ncols / 2.f;
+		float z = dmax * ((double)rand() / RAND_MAX);
+		float nx = ((double)rand() - RAND_HALF) / RAND_HALF;
+		float ny = ((double)rand() - RAND_HALF) / RAND_HALF;
+		float nz = ((double)rand() - RAND_HALF) / RAND_HALF;
+		float norm = std::max(0.01f, sqrt(nx*nx + ny*ny + nz*nz));
+		nx /= norm;
+		ny /= norm;
+		nz /= norm;
+		*this = Plane(nx, ny, nz, y, x, z);
 	}
 	Plane RandomSearch(int y, int x, float radius_z0, float radius_n)
 	{
@@ -156,6 +170,7 @@ public:
 	}
 	VECBITMAP& operator=(const VECBITMAP& m)
 	{
+		if (data) { delete[] data; }
 		w = m.w; h = m.h; n = m.n; is_shared = m.is_shared;
 		if (m.is_shared) { data = m.data; }
 		else { data = new T[w*h*n]; memcpy(data, m.data, w*h*n*sizeof(T)); }
@@ -828,6 +843,7 @@ void PostProcess(
 #ifdef DO_POST_PROCESSING
 	// Hole filling
 	CrossCheck(dispL, dispR, validL, validR);
+	#pragma omp parallel for
 	for (int y = 0; y < nrows; y++) {
 		for (int x = 0; x < ncols; x++) {
 			if (!validL[y][x]) {
@@ -851,7 +867,7 @@ void PostProcess(
 		//if (round + 1 == maxround) {
 		//	useInvalidPixels = false;
 		//}
-
+		#pragma omp parallel for
 		for (int y = 0; y < nrows; y++) {
 			if (y % 10 == 0) { printf("median filtering row %d\n", y); }
 			for (int x = 0; x < ncols; x++) {
@@ -905,11 +921,11 @@ void RunPatchMatchStereo(VECBITMAP<unsigned char>& imL, VECBITMAP<unsigned char>
 	}
 	printf("g_improve_cnt: %d\n", g_improve_cnt);
 
-	coeffsL.SaveToBinaryFile(folders[id] + "coeffsL.bin");
-	coeffsR.SaveToBinaryFile(folders[id] + "coeffsR.bin");
+	coeffsL.SaveToBinaryFile(folders[folder_id] + "coeffsL.bin");
+	coeffsR.SaveToBinaryFile(folders[folder_id] + "coeffsR.bin");
 #else
-	coeffsL.LoadFromBinaryFile(folders[id] + "coeffsL.bin");
-	coeffsR.LoadFromBinaryFile(folders[id] + "coeffsR.bin");
+	coeffsL.LoadFromBinaryFile(folders[folder_id] + "coeffsL.bin");
+	coeffsR.LoadFromBinaryFile(folders[folder_id] + "coeffsR.bin");
 #endif
 
 	// Post processing
@@ -959,11 +975,11 @@ void RunPatchMatchStereoSubpixel(VECBITMAP<unsigned char>& imL, VECBITMAP<unsign
 
 	printf("g_improve_cnt: %d\n", g_improve_cnt);
 
-	coeffsL.SaveToBinaryFile(folders[id] + "coeffsL.bin");
-	coeffsR.SaveToBinaryFile(folders[id] + "coeffsR.bin");
+	coeffsL.SaveToBinaryFile(folders[folder_id] + "coeffsL.bin");
+	coeffsR.SaveToBinaryFile(folders[folder_id] + "coeffsR.bin");
 #else
-	coeffsL.LoadFromBinaryFile(folders[id] + "coeffsL.bin");
-	coeffsR.LoadFromBinaryFile(folders[id] + "coeffsR.bin");
+	coeffsL.LoadFromBinaryFile(folders[folder_id] + "coeffsL.bin");
+	coeffsR.LoadFromBinaryFile(folders[folder_id] + "coeffsR.bin");
 #endif
 
 	// Post processing
@@ -1036,6 +1052,50 @@ VECBITMAP<float> ComputeCensusTensor(VECBITMAP<unsigned char>& imL, VECBITMAP<un
 	return dsi;
 }
 
+VECBITMAP<float> ComputeAdcensusTensor(cv::Mat& cvimL, cv::Mat& cvimR, int sign)
+{
+	const float ad_lambda = 30;
+	const float census_labmda = 10;
+
+	cv::Mat cvgrayL, cvgrayR;
+	cv::cvtColor(cvimL, cvgrayL, CV_BGR2GRAY);
+	cv::cvtColor(cvimR, cvgrayR, CV_BGR2GRAY);
+	VECBITMAP<unsigned char> grayL(nrows, ncols, 1, cvgrayL.data);
+	VECBITMAP<unsigned char> grayR(nrows, ncols, 1, cvgrayR.data);
+	VECBITMAP<float> dsi_census = ComputeCensusTensor(grayL, grayR, sign);
+
+	assert(cvimL.isContinuous());
+	assert(cvimR.isContinuous());
+	VECBITMAP<unsigned char> imL(nrows, ncols, 3, cvimL.data);
+	VECBITMAP<unsigned char> imR(nrows, ncols, 3, cvimR.data);
+
+	VECBITMAP<float> dsi(nrows, ncols, ndisps);
+	#pragma omp parallel for
+	for (int y = 0; y < nrows; y++) {
+		for (int x = 0; x < ncols; x++) {
+			for (int d = 0; d < ndisps; d++) {
+				int xm = (x + sign*d + ncols) % ncols;
+				unsigned char *pL = imL.get(y, x);
+				unsigned char *pR = imR.get(y, xm);
+				dsi.get(y, x)[d] = (fabs((float)pL[0] - pR[0])
+								+ fabs((float)pL[1] - pR[1])
+								+ fabs((float)pL[2] - pR[2])) / 3.f;
+			}
+		}
+	}
+
+	#pragma omp parallel for
+	for (int y = 0; y < nrows; y++) {
+		for (int x = 0; x < ncols; x++) {
+			for (int d = 0; d < ndisps; d++) {
+				dsi.get(y, x)[d] = 2 - exp(-dsi.get(y, x)[d] / ad_lambda) - exp(-dsi_census.get(y, x)[d] / census_labmda);
+			}
+		}
+	}
+
+	return dsi;
+}
+
 VECBITMAP<float> ComputeAdgradientTensor(VECBITMAP<float>& colgradL, VECBITMAP<float>& colgradR, int sign)
 {
 	VECBITMAP<float> dsi(nrows, ncols, ndisps);
@@ -1055,6 +1115,33 @@ VECBITMAP<float> ComputeAdgradientTensor(VECBITMAP<float>& colgradL, VECBITMAP<f
 		}
 	}
 	return dsi;
+}
+
+cv::Mat SegmentToSuperPixels(cv::Mat& imL)
+{
+	cv::Mat argb(nrows, ncols, CV_8UC4);
+	assert(argb.isContinuous());
+	VECBITMAP<int> labelmap(nrows, ncols);
+
+	int from_to[] = { -1, 0, 0, 3, 1, 2, 2, 1 };
+	cv::mixChannels(&imL, 1, &argb, 1, from_to, 4);
+
+	int width(ncols), height(nrows), numlabels(0);;
+	unsigned int* pbuff = (unsigned int*)argb.data;
+	int* klabels = NULL;
+
+	int		k = 200;	// Desired number of superpixels.
+	double	m = 20;		// Compactness factor. use a value ranging from 10 to 40 depending on your needs. Default is 10
+	SLIC segment;
+	segment.DoSuperpixelSegmentation_ForGivenNumberOfSuperpixels(pbuff, width, height, klabels, numlabels, k, m);
+	segment.DrawContoursAroundSegments(pbuff, klabels, width, height, 0xff0000);
+	delete[] klabels;
+
+	cv::Mat contour(nrows, ncols, CV_8UC3);
+	int from_to2[] = { 1, 2, 2, 1, 3, 0 };
+	cv::mixChannels(&argb, 1, &contour, 1, from_to2, 3);
+
+	return contour;
 }
 
 void prepareRect(int yc, int xc, cv::Rect& patchRect, cv::Rect& canvasRect)
@@ -1139,8 +1226,6 @@ void on_mouse(int event, int x, int y, int flags, void *param)
 	}
 }
 
-
-
 void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh)
 {
 	float count[3] = { 0, 0, 0 };
@@ -1194,6 +1279,8 @@ void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh)
 		badPixelRate[0] * 100.0f, badPixelRate[1] * 100.0f, badPixelRate[2] * 100.0f);
 	if (1)
 	{
+		g_segments = SegmentToSuperPixels(g_L);
+
 		cv::Mat compareImg(nrows * 2, ncols* 3, CV_8UC3);
 		cv::Mat outImg1 = compareImg(cv::Rect(0, 0, ncols, nrows)),
 			outImg2 = compareImg(cv::Rect(ncols, 0, ncols, nrows)),
@@ -1202,11 +1289,11 @@ void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh)
 			outImg5 = compareImg(cv::Rect(ncols * 2, 0, ncols, nrows)),
 			outImg6 = compareImg(cv::Rect(ncols * 2, nrows, ncols, nrows));
 		g_GT.copyTo(outImg1);	disp.copyTo(outImg2);
-		/*g_segments.copyTo(outImg3);*/	badOnOC.copyTo(outImg4);
+		g_segments.copyTo(outImg3);	badOnOC.copyTo(outImg4);
 		g_L.copyTo(outImg5);	badOnALL.copyTo(outImg6);
 
 		//cv::cvtColor(disp, disp, CV_RGB2GRAY);
-		cv::imwrite(folders[id] + "disparity.png", disp);
+		cv::imwrite(folders[folder_id] + "disparity.png", disp);
 		cv::imwrite("d:\\disparity.png", disp);
 		cv::imwrite("d:\\badOnALL.png", badOnALL);
 		cv::imwrite("d:\\badOnOC.png", badOnOC);
@@ -1222,8 +1309,6 @@ void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh)
 	}
 }
 
-
-
 void TestSuperPixels()
 {
 	cv::Mat imL = cv::imread("./teddy/im2.png");
@@ -1232,35 +1317,37 @@ void TestSuperPixels()
 	nrows = imL.rows;
 	ncols = imL.cols;
 	cv::Mat argb(nrows, ncols, CV_8UC4);
+	cv::Mat contour(nrows, ncols, CV_8UC4);
 	assert(argb.isContinuous());
-	
+
 
 	int from_to[] = { -1, 0, 0, 3, 1, 2, 2, 1 };
 	cv::mixChannels(&imL, 1, &argb, 1, from_to, 4);
 
 	int width(ncols), height(nrows);
 	unsigned int* pbuff = (unsigned int*)argb.data;
+	unsigned int* contour_buff = (unsigned int*)contour.data;
 
+	for (int iter = 0; iter < 5; iter++) {
+		int k = 200;//Desired number of superpixels.
+		double m = 20;//Compactness factor. use a value ranging from 10 to 40 depending on your needs. Default is 10
+		cv::Mat labelmap(nrows, ncols, CV_32SC1);
+		int* klabels = (int*)labelmap.data;
+		int numlabels(0);
 
-	int k = 200;//Desired number of superpixels.
-	double m = 20;//Compactness factor. use a value ranging from 10 to 40 depending on your needs. Default is 10
-	cv::Mat labelmap(nrows, ncols, CV_32SC1);
-	int* klabels = (int*)labelmap.data;
-	int numlabels(0);
+		SLIC segment;
+		segment.DoSuperpixelSegmentation_ForGivenNumberOfSuperpixels(pbuff, width, height, klabels, numlabels, k, m);
+		memcpy(contour_buff, pbuff, nrows*ncols * 3 * sizeof(unsigned char));
+		segment.DrawContoursAroundSegments(contour_buff, klabels, width, height, 0xff0000);
+		if (klabels) delete[] klabels;
 
-	SLIC segment;
-	segment.DoSuperpixelSegmentation_ForGivenNumberOfSuperpixels(pbuff, width, height, klabels, numlabels, k, m);
-	segment.DrawContoursAroundSegments(pbuff, klabels, width, height, 0xff0000);
-
-	int from_to2[] = { 1, 2, 2, 1, 3, 0 };
-	cv::mixChannels(&argb, 1, &imL, 1, from_to2, 3);
-	imshow("contour", imL);
-	cv::waitKey(0);
-
-	printf("number of labels: %d\n", numlabels);
-
-	//if (pbuff) delete[] pbuff;
-	if (klabels) delete[] klabels;
+		int from_to2[] = { 1, 2, 2, 1, 3, 0 };
+		cv::mixChannels(&contour, 1, &contour, 1, from_to2, 3);
+		imshow("contour", contour);
+		cv::waitKey(0);
+	}
+	if (pbuff) delete[] pbuff;
+	//printf("number of labels: %d\n", numlabels);
 }
 
 void PrepareColgradImages(cv::Mat& img, VECBITMAP<float>& colgrad)
@@ -1287,14 +1374,158 @@ void PrepareColgradImages(cv::Mat& img, VECBITMAP<float>& colgrad)
 	}
 }
 
+void RandomPermute(std::vector<cv::Point2d>& pointList, int k)
+{
+	int n = pointList.size();
+	for (int i = 0; i < k; i++) {
+		int j = rand() % n;
+		std::swap(pointList[i], pointList[j]);
+	}
+}
+
+inline double ComputePlaneCost(Plane& coeff, VECBITMAP<float>& dsi, std::vector<cv::Point2d>& pointList)
+{
+	double cost = 0;
+	int regionSize = pointList.size();
+	for (int i = 0; i < regionSize; i++) {
+		int y = pointList[i].y;
+		int x = pointList[i].x;
+		int d = 0.5 + coeff.a * x + coeff.b * y + coeff.c;
+		if (d < 0 || d > dmax) {
+			cost += BAD_PLANE_PENALTY;
+		}
+		else {
+			cost += dsi.get(y, x)[d];
+		}
+	}
+	return cost;
+}
+
+void RansacEstimate(std::vector<cv::Point2d>& pointList, VECBITMAP<float>& dsi, VECBITMAP<float>& disp, VECBITMAP<Plane>& coeffs)
+{
+	const int MIN_SAMPLE_SIZE = 5;
+	const int regionSize = pointList.size();
+
+	if (regionSize < MIN_SAMPLE_SIZE) {
+		for (int i = 0; i < regionSize; i++) {
+			int y = pointList[i].y;
+			int x = pointList[i].x;
+			coeffs[y][x].RandomAssign();
+		}
+		return;
+	}
+
+	cv::Mat A(MIN_SAMPLE_SIZE, 3, CV_64F);
+	cv::Mat b(MIN_SAMPLE_SIZE, 1, CV_64F);
+	cv::Mat c(3, 1, CV_64F);
+
+	Plane bestcoeff;
+	double bestcost = DBL_MAX;
+
+	for (int retry = 0; retry < 200; retry++) {
+
+		RandomPermute(pointList, MIN_SAMPLE_SIZE);
+		for (int i = 0; i < MIN_SAMPLE_SIZE; i++) {
+			int y = pointList[i].y;
+			int x = pointList[i].x;
+			A.at<double>(i, 0) = x;
+			A.at<double>(i, 1) = y;
+			A.at<double>(i, 2) = 1;
+			b.at<double>(i, 0) = disp[y][x];
+		}
+
+		//printf("solving\n");
+		cv::solve(A, b, c, DECOMP_SVD);
+		//printf("finished.\n");
+		Plane coeff;
+		coeff.a = c.at<double>(0, 0);
+		coeff.b = c.at<double>(1, 0);
+		coeff.c = c.at<double>(2, 0);
+
+		double cost = ComputePlaneCost(coeff, dsi, pointList);
+		if (cost < bestcost) {
+			bestcost = cost;
+			bestcoeff = coeff;
+		}
+	}
+
+	for (int i = 0; i < regionSize; i++) {
+		int y = pointList[i].y;
+		int x = pointList[i].x;
+		coeffs[y][x] = bestcoeff;
+	}
+}
+
+void RansacPlanefit(cv::Mat& imL, VECBITMAP<float>& dsiL, VECBITMAP<float>& dispL, VECBITMAP<Plane>& coeffsL)
+{
+	WinnerTakesAll(dsiL, dispL);
+
+	cv::Mat argb(nrows, ncols, CV_8UC4);
+	assert(argb.isContinuous());
+	VECBITMAP<int> labelmap(nrows, ncols);
+
+	int from_to[] = { -1, 0, 0, 3, 1, 2, 2, 1 };
+	cv::mixChannels(&imL, 1, &argb, 1, from_to, 4);
+	int width(ncols), height(nrows), numlabels(0);;
+	unsigned int* pbuff = (unsigned int*)argb.data;
+	int* klabels = NULL;
+
+	int		k = 200;	// Desired number of superpixels.
+	double	m = 20;		// Compactness factor. use a value ranging from 10 to 40 depending on your needs. Default is 10
+	SLIC segment;
+	segment.DoSuperpixelSegmentation_ForGivenNumberOfSuperpixels(pbuff, width, height, klabels, numlabels, k, m);
+	segment.DrawContoursAroundSegments(pbuff, klabels, width, height, 0xff0000);
+
+
+	for (int y = 0; y < nrows; y++) {
+		for (int x = 0; x < ncols; x++) {
+			labelmap[y][x] = klabels[y*ncols + x];
+		}
+	}
+	delete[] klabels;
+
+
+	printf("numlabels: %d\n", numlabels);
+	std::vector<int> regionSize(numlabels, 0);
+	for (int y = 0; y < nrows; y++) {
+		for (int x = 0; x < ncols; x++) {
+			regionSize[labelmap[y][x]]++;
+		}
+	}
+
+
+	std::vector<std::vector<cv::Point2d>> regionList(numlabels);
+	for (int i = 0; i < numlabels; i++) {
+		regionList[i].reserve(regionSize[i]);
+	}
+
+
+	for (int y = 0; y < nrows; y++) {
+		for (int x = 0; x < ncols; x++) {
+			int label = labelmap[y][x];
+			regionList[label].push_back(cv::Point2d(x, y));
+		}
+	}
+	
+	#pragma omp parallel for
+	for (int id = 0; id < numlabels; id++) {
+		//printf("estimating region %d\n", id);
+		RansacEstimate(regionList[id], dsiL, dispL, coeffsL);
+	}
+	int toc = clock();
+	
+	PlaneMapToDisparityMap(coeffsL, dispL);
+	g_coeffsL = coeffsL;
+}
+
 int main()
 {
 #ifndef USE_OPENMP
 	omp_set_num_threads(1);
 #endif
 
-	Mat cvimL = imread(folders[id] + "im2.png");
-	Mat cvimR = imread(folders[id] + "im6.png");
+	Mat cvimL = imread(folders[folder_id] + "im2.png");
+	Mat cvimR = imread(folders[folder_id] + "im6.png");
 	nrows = cvimL.rows;
 	ncols = cvimL.cols;
 
@@ -1310,6 +1541,8 @@ int main()
 	PrepareColgradImages(cvimL, colgradL);
 	PrepareColgradImages(cvimR, colgradR);
 
+
+
 #ifdef USE_SUBPIXEL_MATCHING_COST
 
 	colgradL.SaveToBinaryFile("colgradL.bin");
@@ -1317,6 +1550,8 @@ int main()
 
 	RunPatchMatchStereoSubpixel(imL, imR, colgradL, colgradR, dispL, dispR);
 #else
+
+
 	//Mat cvgrayL, cvgrayR;
 	//cvtColor(cvimL, cvgrayL, CV_BGR2GRAY);
 	//cvtColor(cvimR, cvgrayR, CV_BGR2GRAY);
@@ -1325,20 +1560,26 @@ int main()
 	//VECBITMAP<float> dsiL = ComputeCensusTensor(grayL, grayR, -1);
 	//VECBITMAP<float> dsiR = ComputeCensusTensor(grayR, grayL, +1);	
 
+	//VECBITMAP<float> dsiL = ComputeAdcensusTensor(cvimL, cvimR, -1);
+	//VECBITMAP<float> dsiR = ComputeAdcensusTensor(cvimR, cvimL, +1);
+
 	VECBITMAP<float> dsiL = ComputeAdgradientTensor(colgradL, colgradR, -1);
 	VECBITMAP<float> dsiR = ComputeAdgradientTensor(colgradR, colgradL, +1);
 
-
 	RunPatchMatchStereo(imL, imR, dsiL, dsiR, dispL, dispR);
+
+	//VECBITMAP<Plane> coeffsL(nrows, ncols);
+	//RansacPlanefit(cvimL, dsiL, dispL, coeffsL);
+	/*WinnerTakesAll(dsiL, dispL);*/
 #endif
 
 
 
-	g_L = cv::imread(folders[id] + "im2.png");
-	g_GT = cv::imread(folders[id] + "disp2.png");
-	g_OC = cv::imread(folders[id] + "nonocc.png");
-	g_ALL = cv::imread(folders[id] + "all.png");
-	g_DISC = cv::imread(folders[id] + "disc.png");
+	g_L = cv::imread(folders[folder_id] + "im2.png");
+	g_GT = cv::imread(folders[folder_id] + "disp2.png");
+	g_OC = cv::imread(folders[folder_id] + "nonocc.png");
+	g_ALL = cv::imread(folders[folder_id] + "all.png");
+	g_DISC = cv::imread(folders[folder_id] + "disc.png");
 	g_colgradL = colgradL;
 	g_colgradR = colgradR;
 	g_imL = imL;
@@ -1346,7 +1587,7 @@ int main()
 
 
 	//VECBITMAP<Plane> coeffsL(nrows, ncols);
-	//coeffsL.LoadFromBinaryFile(folders[id] + "coeffsL.bin");
+	//coeffsL.LoadFromBinaryFile(folders[folder_id] + "coeffsL.bin");
 	//PlaneMapToDisparityMap(coeffsL, dispL);
 	//g_coeffsL = coeffsL;
 
@@ -1359,29 +1600,4 @@ int main()
 
 
 
-void RansacPlanefit(cv::Mat& imL, cv::Mat& imR, VECBITMAP<float>& dsiL, VECBITMAP<float>& dsiR, VECBITMAP<float>& dispL, VECBITMAP<float>& dispR)
-{
-	nrows = imL.rows;
-	ncols = imL.cols;
-	cv::Mat argb(nrows, ncols, CV_8UC4);
-	cv::Mat labelmap(nrows, ncols, CV_32SC1);
-	assert(argb.isContinuous());
-	assert(labelmap.isContinuous());
-
-	int from_to[] = { -1, 0, 0, 3, 1, 2, 2, 1 };
-	cv::mixChannels(&imL, 1, &argb, 1, from_to, 4);
-
-	int width(ncols), height(nrows), numlabels(0);;
-	unsigned int* pbuff = (unsigned int*)argb.data;
-	int* klabels = (int*)labelmap.data;
-
-	int		k = 200;	// Desired number of superpixels.
-	double	m = 20;		// Compactness factor. use a value ranging from 10 to 40 depending on your needs. Default is 10
-	SLIC segment;
-	segment.DoSuperpixelSegmentation_ForGivenNumberOfSuperpixels(pbuff, width, height, klabels, numlabels, k, m);
-	segment.DrawContoursAroundSegments(pbuff, klabels, width, height, 0xff0000);
-
-
-	// FIXME: unfinished.
-}
 
