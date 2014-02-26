@@ -44,11 +44,10 @@ inline NMPoint ComputeGeometricCenter(NMPoint *vertices, int nitems)
 	return sum / nitems;
 }
 
-
 int NelderMeadOptimize(float *x, float(*feval)(float*, int), int maxiters = 0)
 {
 	int	retCode			= -1;
-	const float tol		= 1.f; // tol = 1 suffice.
+	const float tol		= 1.f;		// tol = 1 suffice.
 	const float alpha	= 1;
 	const float gamma	= 2;
 	const float rho		= -0.5;

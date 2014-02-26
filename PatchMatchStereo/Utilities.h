@@ -29,10 +29,9 @@ struct Plane {
 		qy = y;
 		return Plane(nx, ny, nz, qy, qx, z);
 	}
-	void RandomAssign(int nrows, int ncols, int dmax)
+	void RandomAssign(int y, int x, int dmax)
 	{
 		const int RAND_HALF = RAND_MAX / 2;
-		float y = nrows / 2.f, x = ncols / 2.f;
 		float z = dmax * ((double)rand() / RAND_MAX);
 		float nx = ((double)rand() - RAND_HALF) / RAND_HALF;
 		float ny = ((double)rand() - RAND_HALF) / RAND_HALF;
@@ -43,7 +42,7 @@ struct Plane {
 		nz /= norm;
 		*this = Plane(nx, ny, nz, y, x, z);
 	}
-	Plane RandomSearch(int y, int x, float radius_z0, float radius_n)
+	Plane RandomSearch(int y, int x, float radius_z0, float radius_n, float dmax)
 	{
 		const int RAND_HALF = RAND_MAX / 2;
 
@@ -83,7 +82,7 @@ public:
 	bool is_shared;
 	T *get(int y, int x) { return &data[(y*w + x)*n]; }		/* Get patch (y, x). */
 	T *line_n1(int y) { return &data[y*w]; }				/* Get line y assuming n=1. */
-	VECBITMAP() { data = NULL; }
+	VECBITMAP() { w = h = n = 0; data = NULL; }
 	VECBITMAP(const VECBITMAP& obj)
 	{
 		// This constructor is very necessary for returning an object in a function,
@@ -91,7 +90,6 @@ public:
 		w = obj.w; h = obj.h; n = obj.n; is_shared = obj.is_shared;
 		if (is_shared) { data = obj.data; }
 		else { data = new T[w*h*n]; memcpy(data, obj.data, w*h*n*sizeof(T)); }
-
 	}
 	VECBITMAP(int h_, int w_, int n_ = 1, T* data_ = NULL)
 	{
@@ -101,6 +99,9 @@ public:
 	}
 	VECBITMAP& operator=(const VECBITMAP& m)
 	{
+		// printf("= operator invoked.\n");
+		// FIXME: it's not suggested to overload assignment operator, should declare a copyTo() function instead.
+		// However, if the assignment operator is not overloaded, do not invoke it (e.g. a = b), it is dangerous.
 		if (data) { delete[] data; }
 		w = m.w; h = m.h; n = m.n; is_shared = m.is_shared;
 		if (m.is_shared) { data = m.data; }
@@ -125,3 +126,43 @@ public:
 		fclose(fid);
 	}
 };
+
+
+class Timer
+{
+public:
+	static void tic()
+	{
+		time_stamps.push(clock());
+	}
+	static void tic(const char *msg)
+	{
+		printf("Processing %s ...\n", msg);
+		tic();
+	}
+	static void toc()
+	{
+		clock_t tic = time_stamps.top();
+		clock_t toc = clock();
+		float time_elapsed = (toc - tic) / 1000.f;
+		printf("%.2fs\n", time_elapsed);
+		time_stamps.pop();
+	}
+private:
+	static std::stack<clock_t> time_stamps;
+};
+
+
+void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh, VECBITMAP<Plane>& coeffsL = VECBITMAP<Plane>());
+void RunLaplacianStereo(cv::Mat& imL, cv::Mat& imR, int ndisps);
+VECBITMAP<float> ComputeAdGradientCostVolume(cv::Mat& imL, cv::Mat& imR, int ndisps, int sign, float granularity);
+VECBITMAP<float> ComputeAdCensusCostVolume(cv::Mat& cvimL, cv::Mat& cvimR, int ndisps, int sign);
+VECBITMAP<float> WinnerTakesAll(VECBITMAP<float>& dsi);
+
+extern const std::string folders[60];
+extern const int scale, ndisps, dmax, patch_w, patch_r, folder_id;
+extern const float alpha, gamma, tau_col, tau_grad, granularity, BAD_PLANE_PENALTY;
+
+
+
+

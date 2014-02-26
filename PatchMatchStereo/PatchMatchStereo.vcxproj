@@ -75,7 +75,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>D:\code\opencv\build\include;$(IncludePath)</IncludePath>
+    <IncludePath>D:\code\opencv\build\include;$(IncludePath);D:\code\eigen-eigen-ffa86ffb5570</IncludePath>
     <LibraryPath>$(LibraryPath);D:\code\opencv\build\x64\vc12\lib</LibraryPath>
     <ExcludePath>$(ExcludePath)</ExcludePath>
     <ExecutablePath>$(ExecutablePath);D:\code\opencv\build\x64\vc12\bin</ExecutablePath>
@@ -89,7 +89,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>D:\code\opencv\build\include;C:\Program Files\MATLAB\R2012b\extern\include;$(IncludePath)</IncludePath>
+    <IncludePath>D:\code\opencv\build\include;C:\Program Files\MATLAB\R2012b\extern\include;$(IncludePath);D:\code\eigen-eigen-ffa86ffb5570</IncludePath>
     <LibraryPath>$(LibraryPath);D:\code\opencv\build\x64\vc12\lib</LibraryPath>
     <ExcludePath>$(ExcludePath)</ExcludePath>
     <ExecutablePath>$(ExecutablePath);D:\code\opencv\build\x64\vc12\bin</ExecutablePath>
@@ -169,10 +169,13 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="NelderMead.cpp" />
     <ClCompile Include="PatchMatchStereo.cpp" />
+    <ClCompile Include="SecondOrder.cpp" />
     <ClCompile Include="SLIC.cpp" />
+    <ClCompile Include="Utilities.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="SLIC.h" />
+    <ClInclude Include="Utilities.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
