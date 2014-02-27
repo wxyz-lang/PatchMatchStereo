@@ -23,13 +23,15 @@ extern int nrows, ncols;
 
 Eigen::SparseMatrix<double> PrecomputeSparseLTL(cv::Mat& cvImg)
 {
-	assert(cvImg.isContinuous());
-	VECBITMAP<unsigned char> img(nrows, ncols, 3, cvImg.data);
+	cv::Mat blurImg;
+	cv::GaussianBlur(cvImg, blurImg, cv::Size(3, 3), 0.5);
+	assert(blurImg.isContinuous());
+	VECBITMAP<unsigned char> img(nrows, ncols, 3, blurImg.data);
 	cv::Mat weightImgLR(nrows, ncols, CV_32FC1);
 	cv::Mat weightImgUD(nrows, ncols, CV_32FC1);
 
 	// Construct LTWT.
-	const double sigma = 90.f;
+	const double sigma = 80;
 	const int N = nrows * ncols;
 	std::vector<Eigen::Triplet<double>> coefficientsLR;
 	std::vector<Eigen::Triplet<double>> coefficientsUD;
@@ -76,7 +78,8 @@ Eigen::SparseMatrix<double> PrecomputeSparseLTL(cv::Mat& cvImg)
 				float diffR = fabs((float)p[0] - pR[0]) + fabs((float)p[1] - pR[1]) + fabs((float)p[2] - pR[2]);
 				float wL = exp(-diffL / sigma);
 				float wR = exp(-diffR / sigma);
-				float weight = std::min(wL, wR);
+				//float weight = std::min(wL, wR);
+				float weight = wR;
 
 				Eigen::Triplet<double> triplet(i, i, weight);
 				coefficientsLR.push_back(triplet);
@@ -91,7 +94,8 @@ Eigen::SparseMatrix<double> PrecomputeSparseLTL(cv::Mat& cvImg)
 				float diffD = fabs((float)p[0] - pD[0]) + fabs((float)p[1] - pD[1]) + fabs((float)p[2] - pD[2]);
 				float wU = exp(-diffU / sigma);
 				float wD = exp(-diffD / sigma);
-				float weight = std::min(wU, wD);
+				//float weight = std::min(wU, wD);
+				float weight = wD;
 
 				Eigen::Triplet<double> triplet(i, i, weight);
 				coefficientsUD.push_back(triplet);
@@ -179,42 +183,55 @@ void RunLaplacianStereo(cv::Mat& imL, cv::Mat& imR, int ndisps)
 	Timer::toc();
 
 	
-	const float lambda = 20.f;
+	
 
-	EvaluateDisparity(u, 0.5f);
+	//EvaluateDisparity(u, 0.5f);
 
-	// Iterate between smoothness and matching cost
-	for (float theta = 0.001; theta < 20; theta *= 1.5f) {
-
-		printf("theta = %f\n", theta);
-
-		Timer::tic("SolveSecondOrderSmoothness");
-		u = SolveSecondOrderSmootheness(v, theta, LTL);
-		Timer::toc();
-		//EvaluateDisparity(u, 0.5f);
-
-		Timer::tic("ConstrainedLocalSearch");
-		v = ConstrainedLocalSearch(u, dsiL, theta, lambda);
-		Timer::toc();
-		//EvaluateDisparity(v, 0.5f);
-	}
-
+	//// Iterate between smoothness and matching cost
 	//for (float theta = 0.001; theta < 20; theta *= 1.5f) {
 
 	//	printf("theta = %f\n", theta);
 
 	//	Timer::tic("SolveSecondOrderSmoothness");
-	//	uL = SolveSecondOrderSmootheness(vL, theta, LTL);
-	//	uR = SolveSecondOrderSmootheness(vR, theta, LTL);
+	//	u = SolveSecondOrderSmootheness(v, theta, LTL);
 	//	Timer::toc();
 	//	//EvaluateDisparity(u, 0.5f);
 
 	//	Timer::tic("ConstrainedLocalSearch");
-	//	RunPatchMatchStereo(imL, imR, ndisps, uL, uR);
+	//	v = ConstrainedLocalSearch(u, dsiL, theta, lambda);
 	//	Timer::toc();
 	//	//EvaluateDisparity(v, 0.5f);
 	//}
 
-	EvaluateDisparity(u, 0.5f);
-	EvaluateDisparity(v, 0.5f);
+	const float lambda = 40.f;
+
+	VECBITMAP<float> uL(nrows, ncols);
+	VECBITMAP<float> uR(nrows, ncols);
+	VECBITMAP<float> vL(nrows, ncols);
+	VECBITMAP<float> vR(nrows, ncols);
+
+	for (float theta = 0.f; theta < 20; /*theta *= 1.5f*/) {
+
+		printf("\ntheta = %f\n\n", theta);
+
+		Timer::tic("PatchMatchSearch");
+		RunPatchMatchStereo(imL, imR, ndisps, uL, uR, theta, lambda);
+		vL = uL;
+		vR = uR;
+		Timer::toc();
+		//EvaluateDisparity(vL, 0.5f);
+
+		//theta = 2 * (theta + 0.02);
+		if (theta == 0) { theta = 0.1; }
+		else theta *= 1.5f;
+
+		Timer::tic("SolveSecondOrderSmoothness");
+		uL = SolveSecondOrderSmootheness(vL, theta, LTL);
+		uR = SolveSecondOrderSmootheness(vR, theta, LTL);
+		Timer::toc();
+		//EvaluateDisparity(uL, 0.5f);
+	}
+
+	EvaluateDisparity(vL, 0.5f);
+	EvaluateDisparity(uL, 0.5f);
 }

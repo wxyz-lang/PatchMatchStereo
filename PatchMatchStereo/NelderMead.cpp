@@ -1,4 +1,4 @@
-
+#include <cassert>
 #include <cstring>
 #include <algorithm>
 
@@ -21,6 +21,10 @@ inline void ReplaceVertex(NMPoint *vertices, int idx, NMPoint& item )
 		std::swap(vertices[idx - 1], vertices[idx]);
 		idx--;
 	}
+
+	for (int i = 0; i < n; i++) {
+		assert(vertices[i].cost < vertices[i + 1].cost);
+	}
 }
 
 inline void ReorderVertexList(NMPoint* vertices, int nitems)
@@ -32,6 +36,9 @@ inline void ReorderVertexList(NMPoint* vertices, int nitems)
 				std::swap(vertices[i], vertices[j]);
 			}
 		}
+	}
+	for (int i = 0; i < n; i++) {
+		assert(vertices[i].cost < vertices[i + 1].cost);
 	}
 }
 
@@ -61,6 +68,8 @@ int NelderMeadOptimize(float *x, float(*feval)(float*, int), int maxiters = 0)
 		vertices[i].cost = feval(vertices[i].data, n);
 	}
 	ReorderVertexList(vertices, n + 1);
+
+	float cost_before = vertices[0].cost;
 
 	// FIXME: add convergence criteria
 	// FIXME: add bound constraints
@@ -111,6 +120,12 @@ int NelderMeadOptimize(float *x, float(*feval)(float*, int), int maxiters = 0)
 			vertices[i].cost = feval(vertices[i].data, n);
 		}
 		ReorderVertexList(vertices, n + 1);
+	}
+
+	float cost_after = vertices[0].cost;
+	assert(cost_after <= cost_before);
+	if (cost_after > cost_before) {
+		printf("FUCKING BUG, FUCKING BUG\n");
 	}
 
 	/*printf("Nelder-Mead returning.\n");*/

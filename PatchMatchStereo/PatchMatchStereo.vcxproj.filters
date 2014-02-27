@@ -13,6 +13,12 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="SLIC">
+      <UniqueIdentifier>{b7088616-85a9-4f03-b844-e883a70063e2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="MeanShift">
+      <UniqueIdentifier>{8fc5dc9e-abc4-4852-a7f0-9b13f79ee8b2}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -24,22 +30,52 @@
     <ClCompile Include="PatchMatchStereo.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="SLIC.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="Utilities.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="SecondOrder.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="SLIC.cpp">
+      <Filter>SLIC</Filter>
+    </ClCompile>
+    <ClCompile Include="ms.cpp">
+      <Filter>MeanShift</Filter>
+    </ClCompile>
+    <ClCompile Include="msImageProcessor.cpp">
+      <Filter>MeanShift</Filter>
+    </ClCompile>
+    <ClCompile Include="RAList.cpp">
+      <Filter>MeanShift</Filter>
+    </ClCompile>
+    <ClCompile Include="rlist.cpp">
+      <Filter>MeanShift</Filter>
+    </ClCompile>
+    <ClCompile Include="PlaneFitting.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="SLIC.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="Utilities.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SLIC.h">
+      <Filter>SLIC</Filter>
+    </ClInclude>
+    <ClInclude Include="ms.h">
+      <Filter>MeanShift</Filter>
+    </ClInclude>
+    <ClInclude Include="msImageProcessor.h">
+      <Filter>MeanShift</Filter>
+    </ClInclude>
+    <ClInclude Include="RAList.h">
+      <Filter>MeanShift</Filter>
+    </ClInclude>
+    <ClInclude Include="rlist.h">
+      <Filter>MeanShift</Filter>
+    </ClInclude>
+    <ClInclude Include="tdef.h">
+      <Filter>MeanShift</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

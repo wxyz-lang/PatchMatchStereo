@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <algorithm>
 
+
 struct Plane {
 	float a, b, c;
 	float nx, ny, nz;
@@ -33,6 +34,19 @@ struct Plane {
 	{
 		const int RAND_HALF = RAND_MAX / 2;
 		float z = dmax * ((double)rand() / RAND_MAX);
+		float nx = ((double)rand() - RAND_HALF) / RAND_HALF;
+		float ny = ((double)rand() - RAND_HALF) / RAND_HALF;
+		float nz = ((double)rand() - RAND_HALF) / RAND_HALF;
+		float norm = std::max(0.01f, sqrt(nx*nx + ny*ny + nz*nz));
+		nx /= norm;
+		ny /= norm;
+		nz /= norm;
+		*this = Plane(nx, ny, nz, y, x, z);
+	}
+	void RandomAssignNormal(int y, int x, float dmax, float z)
+	{
+		const int RAND_HALF = RAND_MAX / 2;
+		z = std::max(0.f, std::min(dmax, z));
 		float nx = ((double)rand() - RAND_HALF) / RAND_HALF;
 		float ny = ((double)rand() - RAND_HALF) / RAND_HALF;
 		float nz = ((double)rand() - RAND_HALF) / RAND_HALF;
@@ -157,7 +171,18 @@ void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh, VECBITMAP<Plane>&
 void RunLaplacianStereo(cv::Mat& imL, cv::Mat& imR, int ndisps);
 VECBITMAP<float> ComputeAdGradientCostVolume(cv::Mat& imL, cv::Mat& imR, int ndisps, int sign, float granularity);
 VECBITMAP<float> ComputeAdCensusCostVolume(cv::Mat& cvimL, cv::Mat& cvimR, int ndisps, int sign);
-VECBITMAP<float> WinnerTakesAll(VECBITMAP<float>& dsi);
+VECBITMAP<float> WinnerTakesAll(VECBITMAP<float>& dsi, float granularity = 1.f);
+void RunPatchMatchStereo(cv::Mat& imL, cv::Mat& imR, int ndisps, VECBITMAP<float>& uL, VECBITMAP<float>& uR, float theta, float lambda);
+int meanShiftSegmentation(const cv::Mat &img, const float colorRadius, const int spatialRadius, const int minRegion, cv::Mat &result);
+void RansacPlanefit(cv::Mat& imL, cv::Mat& imR, int ndisps);
+void PlaneMapToDisparityMap(VECBITMAP<Plane>& coeffs, VECBITMAP<float>& disp);
+void RunRansacPlaneFitting(cv::Mat& imL, cv::Mat& imR, int ndisps);
+void PostProcess(
+	VECBITMAP<float>& weightsL, VECBITMAP<float>& weightsR,
+	VECBITMAP<Plane>& coeffsL, VECBITMAP<Plane>& coeffsR,
+	VECBITMAP<float>& dispL, VECBITMAP<float>& dispR);
+VECBITMAP<float> PrecomputeWeights(cv::Mat& img);
+
 
 extern const std::string folders[60];
 extern const int scale, ndisps, dmax, patch_w, patch_r, folder_id;

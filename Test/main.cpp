@@ -97,25 +97,9 @@ void test2(int kkk) {
 int main()
 {
 
-	test2(1);
-
-	////VECBITMAP<float> a(3, 4);
-	////{
-	////	VECBITMAP<float> b;
-	////	b = a;
-	////	printf("%x\n", a.data);
-	////	printf("%x\n", b.data);
-	////}
-	////int val = 3;
-	////int val(3);
-
-	//VECBITMAP<float> m = testFunc(3, 4);
-	//printf("%x\n", m.data);
-	//
-
-	////VECBITMAP<float> a = m;
-	//////a.assign(m);
-	////printf("%x\n", a.data);
+	std::string s = "abcde";
+	std::string s2 = s.substr(0, s.length() - 1);
+	printf("%s\n", s2.c_str());
 
 	return 0;
 }

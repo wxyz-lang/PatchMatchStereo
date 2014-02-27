@@ -38,7 +38,7 @@
 
 #define USE_OPENMP
 //#define LOAD_RESULT_FROM_LAST_RUN
-#define DO_POST_PROCESSING
+//#define DO_POST_PROCESSING
 //#define USE_NELDERMEAD_OPT
 
 // Static class member initialization 
@@ -50,16 +50,16 @@ const float BAD_PLANE_PENALTY = 120;  // defined as 2 times the max cost of dsi.
 const float	gamma_proximity = 25;
 int			g_improve_cnt = 0;
 
-const int		patch_w = 35;
-const int		patch_r = 17;
-const int		maxiters = 3;
-const float		alpha = 0.9;
-const float		gamma = 10;
-const float		tau_col = 10;
-const float		tau_grad = 2;
+const int		patch_w		= 35;
+const int		patch_r		= 17;
+const int		maxiters	= 3;
+const float		alpha		= 0.9;
+const float		gamma		= 10;
+const float		tau_col		= 30;
+const float		tau_grad	= 6;
 const float		granularity = 0.25f;
 
-const int folder_id = 3;
+const int folder_id = 5;
 const std::string folders[] = { "tsukuba/", "venus/", "teddy/", "cones/", "Bowling2/", "Baby1/" };
 const int scales[]	= { 16, 8, 4, 4, 3, 3 };
 const int drange[]	= { 16, 20, 60, 60, 70, 70 };
@@ -256,7 +256,7 @@ VECBITMAP<float> ComputeAdCensusCostVolume(cv::Mat& cvimL, cv::Mat& cvimR, int n
 	return dsi;
 }
 
-VECBITMAP<float> WinnerTakesAll(VECBITMAP<float>& dsi)
+VECBITMAP<float> WinnerTakesAll(VECBITMAP<float>& dsi, float granularity)
 {
 	int nrows = dsi.h, ncols = dsi.w, ndisps = dsi.n;
 	VECBITMAP<float> disp(nrows, ncols);
@@ -270,7 +270,7 @@ VECBITMAP<float> WinnerTakesAll(VECBITMAP<float>& dsi)
 					minidx = k;
 				}
 			}
-			disp[y][x] = minidx;
+			disp[y][x] = minidx * granularity;
 		}
 	}
 	return disp;
@@ -561,8 +561,8 @@ void PostProcess(
 	VECBITMAP<bool> validL(nrows, ncols), validR(nrows, ncols);
 	PlaneMapToDisparityMap(coeffsL, dispL);
 	PlaneMapToDisparityMap(coeffsR, dispR);
-
 #ifdef DO_POST_PROCESSING
+
 	// Hole filling
 	CrossCheck(dispL, dispR, validL, validR);
 	#pragma omp parallel for
@@ -576,6 +576,9 @@ void PostProcess(
 			}
 		}
 	}
+	PlaneMapToDisparityMap(coeffsL, dispL);
+	PlaneMapToDisparityMap(coeffsR, dispR);
+
 
 	// Weighted median filtering 
 	int maxround = 1;
@@ -682,6 +685,98 @@ void RunPatchMatchStereo(cv::Mat& imL, cv::Mat& imR, int ndisps)
 	EvaluateDisparity(dispL, 0.5f, coeffsL);
 }
 
+void RunPatchMatchStereo(cv::Mat& imL, cv::Mat& imR, int ndisps, VECBITMAP<float>& uL, VECBITMAP<float>& uR, float theta, float lambda)
+{
+	VECBITMAP<float> dsiL = ComputeAdGradientCostVolume(imL, imR, ndisps, -1, granularity);
+	VECBITMAP<float> dsiR = ComputeAdGradientCostVolume(imR, imL, ndisps, +1, granularity);
+
+	int nlevels = ndisps / granularity;
+	for (int y = 0; y < nrows; y++) {
+		for (int x = 0; x < ncols; x++) {
+			for (int level = 0; level < nlevels; level++) {
+				float d = level * granularity;
+				dsiL.get(y, x)[level] *= lambda;
+				dsiL.get(y, x)[level] += theta * (d - uL[y][x]) * (d - uL[y][x]);
+				dsiR.get(y, x)[level] *= lambda;
+				dsiR.get(y, x)[level] += theta * (d - uR[y][x]) * (d - uR[y][x]);
+			}
+		}
+	}
+
+	VECBITMAP<float> weightsL = PrecomputeWeights(imL);
+	VECBITMAP<float> weightsR = PrecomputeWeights(imR);
+
+	VECBITMAP<float> dispL(nrows, ncols), dispR(nrows, ncols);
+	VECBITMAP<Plane> coeffsL(nrows, ncols), coeffsR(nrows, ncols);
+	VECBITMAP<float> bestcostsL(nrows, ncols), bestcostsR(nrows, ncols);
+
+#ifndef LOAD_RESULT_FROM_LAST_RUN
+	// Random initialization
+	Timer::tic("Random Init");
+	RandomInit(coeffsL, bestcostsL, dsiL, weightsL);
+	RandomInit(coeffsR, bestcostsR, dsiR, weightsR);
+	Timer::toc();
+
+	// Iteration
+	for (int iter = 0; iter < maxiters; iter++) {
+
+		if (iter % 2 == 0) {
+			Timer::tic("Left View");
+			#pragma omp parallel for
+			for (int y = 0; y < nrows; y++) {
+				for (int x = 0; x < ncols; x++) {
+					PropagateAndRandomSearch(y, x, coeffsL, coeffsR, bestcostsL, bestcostsR, dsiL, dsiR, weightsL, weightsR, iter, -1);
+				}
+			}
+			Timer::toc();
+			Timer::tic("Right View");
+			#pragma omp parallel for
+			for (int y = 0; y < nrows; y++) {
+				for (int x = 0; x < ncols; x++) {
+					PropagateAndRandomSearch(y, x, coeffsR, coeffsL, bestcostsR, bestcostsL, dsiR, dsiL, weightsR, weightsL, iter, +1);
+				}
+			}
+			Timer::toc();
+		}
+		else {
+			Timer::tic("Left View");
+			#pragma omp parallel for
+			for (int y = nrows - 1; y >= 0; y--) {
+				for (int x = ncols - 1; x >= 0; x--) {
+					PropagateAndRandomSearch(y, x, coeffsL, coeffsR, bestcostsL, bestcostsR, dsiL, dsiR, weightsL, weightsR, iter, -1);
+				}
+			}
+			Timer::toc();
+			Timer::tic("Right View");
+			#pragma omp parallel for
+			for (int y = nrows - 1; y >= 0; y--) {
+				for (int x = ncols - 1; x >= 0; x--) {
+					PropagateAndRandomSearch(y, x, coeffsR, coeffsL, bestcostsR, bestcostsL, dsiR, dsiL, weightsR, weightsL, iter, +1);
+				}
+			}
+			Timer::toc();
+		}
+	}
+
+	printf("g_improve_cnt: %d\n", g_improve_cnt);
+	coeffsL.SaveToBinaryFile(folders[folder_id] + "coeffsL.bin");
+	coeffsR.SaveToBinaryFile(folders[folder_id] + "coeffsR.bin");
+#else
+	coeffsL.LoadFromBinaryFile(folders[folder_id] + "coeffsL.bin");
+	coeffsR.LoadFromBinaryFile(folders[folder_id] + "coeffsR.bin");
+#endif
+
+	// Post processing
+	Timer::tic("POST PROCESSING");
+	PostProcess(weightsL, weightsR, coeffsL, coeffsR, dispL, dispR);
+	Timer::toc();
+
+	uL = dispL;
+	uR = dispR;
+	
+	//EvaluateDisparity(dispL, 0.5f, coeffsL);
+}
+
 
 
 
@@ -701,8 +796,9 @@ int main()
 	//Timer::tic("LocalSearch");
 	//LocalSearch(imL, imR, ndisps, dispL, dispR);
 	Timer::tic("PatchMatchStereo");
-	RunPatchMatchStereo(imL, imR, ndisps);
+	//RunPatchMatchStereo(imL, imR, ndisps);
 	//RunLaplacianStereo(imL, imR, ndisps);
+	RunRansacPlaneFitting(imL, imR, ndisps);
 	Timer::toc();
 
 	

@@ -28,6 +28,12 @@ cv::Mat g_stereo, g_mydisp;
 VECBITMAP<Plane> g_coeffsL;
 VECBITMAP<float> g_colgradL, g_colgradR;
 
+extern std::vector<std::vector<cv::Point2d>> g_regionList;
+extern VECBITMAP<int> g_labelmap;
+extern VECBITMAP<Plane> g_coeffsL_ransac, g_coeffsL_neldermead;
+extern VECBITMAP<float> g_dsiL;
+
+
 VECBITMAP<float> ComputeColGradFeature(cv::Mat& img);
 
 
@@ -162,6 +168,19 @@ void on_mouse(int event, int x, int y, int flags, void *param)
 				float cost = ComputePlaneCost(y, x, g_coeffsL[y][x], g_colgradL, g_colgradR, weights, -1) / wsum;
 				printf("plane cost: %f\n", cost);
 			}
+			if (g_regionList.size() > 0) {
+
+				int id = g_labelmap[y][x];
+				Plane coeff_ransac = g_coeffsL_ransac[y][x];
+				Plane coeff_neldermead = g_coeffsL_neldermead[y][x];
+
+				double ComputePlaneCost(Plane& coeff, VECBITMAP<float>& dsi, std::vector<cv::Point2d>& pointList);
+				float cost_ransac = ComputePlaneCost(coeff_ransac, g_dsiL, g_regionList[id]);
+				float cost_neldermead = ComputePlaneCost(coeff_neldermead, g_dsiL, g_regionList[id]);
+
+				printf("     RANSAC plane cost: %f\n", cost_ransac);
+				printf("NELDER-MEAD plane cost: %f\n", cost_neldermead);
+			}
 			
 
 			cv::Mat outImg1 = tmp(cv::Rect(0, 0, ncols, nrows)),
@@ -259,8 +278,6 @@ void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh, VECBITMAP<Plane>&
 	if (1)
 	{
 
-		//g_segments = SegmentToSuperPixels(g_L);
-
 		cv::Mat compareImg(nrows * 2, ncols * 3, CV_8UC3);
 		cv::Mat outImg1 = compareImg(cv::Rect(0, 0, ncols, nrows)),
 			outImg2 = compareImg(cv::Rect(ncols, 0, ncols, nrows)),
@@ -269,8 +286,18 @@ void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh, VECBITMAP<Plane>&
 			outImg5 = compareImg(cv::Rect(ncols * 2, 0, ncols, nrows)),
 			outImg6 = compareImg(cv::Rect(ncols * 2, nrows, ncols, nrows));
 		g_GT.copyTo(outImg1);	disp.copyTo(outImg2);
-		/*g_segments.copyTo(outImg3);*/	badOnOC.copyTo(outImg4);
+		g_segments.copyTo(outImg3);	badOnOC.copyTo(outImg4);
 		g_L.copyTo(outImg5);	badOnALL.copyTo(outImg6);
+
+
+		std::string folderpath = folders[folder_id];
+		char buf[256];
+		//sprintf(buf, "%s=%.2f.png", folderpath.substr(0, folderpath.length() - 1).c_str(), badPixelRate[0] * 100.0f);
+		//std::string filename(buf);
+		std::string filename = folderpath.substr(0, folderpath.length() - 1) + ".png";
+		std::string filename2 = folderpath.substr(0, folderpath.length() - 1) + "_err.png";
+		cv::imwrite("d:\\" + filename, disp);
+		cv::imwrite("d:\\" + filename2, compareImg);
 
 		cv::imwrite(folders[folder_id] + "disparity.png", disp);
 		cv::imwrite("d:\\disparity.png", disp);

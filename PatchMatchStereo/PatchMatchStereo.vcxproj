@@ -167,14 +167,24 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="ms.cpp" />
+    <ClCompile Include="msImageProcessor.cpp" />
     <ClCompile Include="NelderMead.cpp" />
     <ClCompile Include="PatchMatchStereo.cpp" />
+    <ClCompile Include="PlaneFitting.cpp" />
+    <ClCompile Include="RAList.cpp" />
+    <ClCompile Include="rlist.cpp" />
     <ClCompile Include="SecondOrder.cpp" />
     <ClCompile Include="SLIC.cpp" />
     <ClCompile Include="Utilities.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ms.h" />
+    <ClInclude Include="msImageProcessor.h" />
+    <ClInclude Include="RAList.h" />
+    <ClInclude Include="rlist.h" />
     <ClInclude Include="SLIC.h" />
+    <ClInclude Include="tdef.h" />
     <ClInclude Include="Utilities.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
