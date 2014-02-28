@@ -127,6 +127,20 @@ double ComputePlaneCost(int yc, int xc, Plane& coeff_try, VECBITMAP<float>& colg
 	return cost;
 }
 
+float ComputeRegionCost(std::vector<cv::Point2d>& pointList, cv::Mat& disp)
+{
+	int regionSize = pointList.size();
+	float cost = 0.f;
+	for (int i = 0; i < regionSize; i++) {
+		int y = pointList[i].y, x = pointList[i].x;
+		float d = (float)disp.at<cv::Vec3b>(y, x)[0] / scale;
+		d = std::max(0.f, std::min((float)dmax, d));
+		int level = 0.5 + d / granularity;
+		cost += g_dsiL.get(y, x)[level];
+	}
+	return cost;
+}
+
 void on_mouse(int event, int x, int y, int flags, void *param)
 {
 
@@ -159,27 +173,36 @@ void on_mouse(int event, int x, int y, int flags, void *param)
 			float myDisp = g_mydisp.at<cv::Vec3b>(y, x)[0];
 			printf("(%d, %d)->GT: %.1f, MINE: %.1f    ", y, x, gtDisp / scale, myDisp / scale);
 			if (g_coeffsL.data) {
-				printf("a = %.5f  b = %.5f  c = %.5f\n", g_coeffsL[y][x].a, g_coeffsL[y][x].b, g_coeffsL[y][x].c);
+				//printf("a = %.5f  b = %.5f  c = %.5f\n", g_coeffsL[y][x].a, g_coeffsL[y][x].b, g_coeffsL[y][x].c);
 			}
 
 			VECBITMAP<float> weights = ComputeLocalPatchWeights(y, x, g_L);
 			float wsum = 0;  for (int i = 0; i < patch_w * patch_w; i++) wsum += weights.data[i];
 			if (g_coeffsL.data) {
-				float cost = ComputePlaneCost(y, x, g_coeffsL[y][x], g_colgradL, g_colgradR, weights, -1) / wsum;
-				printf("plane cost: %f\n", cost);
+				/*float cost = ComputePlaneCost(y, x, g_coeffsL[y][x], g_colgradL, g_colgradR, weights, -1) / wsum;
+				printf("plane cost: %f\n", cost);*/
 			}
 			if (g_regionList.size() > 0) {
 
+				//int id = g_labelmap[y][x];
+				//Plane coeff_ransac = g_coeffsL_ransac[y][x];
+				//Plane coeff_neldermead = g_coeffsL_neldermead[y][x];
+
+				//double ComputePlaneCost(Plane& coeff, VECBITMAP<float>& dsi, std::vector<cv::Point2d>& pointList);
+				//float cost_ransac = ComputePlaneCost(coeff_ransac, g_dsiL, g_regionList[id]);
+				//float cost_neldermead = ComputePlaneCost(coeff_neldermead, g_dsiL, g_regionList[id]);
+
+				//printf("     RANSAC plane cost: %f\n", cost_ransac);
+				//printf("NELDER-MEAD plane cost: %f\n", cost_neldermead);
+
 				int id = g_labelmap[y][x];
-				Plane coeff_ransac = g_coeffsL_ransac[y][x];
-				Plane coeff_neldermead = g_coeffsL_neldermead[y][x];
-
-				double ComputePlaneCost(Plane& coeff, VECBITMAP<float>& dsi, std::vector<cv::Point2d>& pointList);
-				float cost_ransac = ComputePlaneCost(coeff_ransac, g_dsiL, g_regionList[id]);
-				float cost_neldermead = ComputePlaneCost(coeff_neldermead, g_dsiL, g_regionList[id]);
-
-				printf("     RANSAC plane cost: %f\n", cost_ransac);
-				printf("NELDER-MEAD plane cost: %f\n", cost_neldermead);
+				std::vector<cv::Point2d> pointList = g_regionList[id];
+				int regionSize = pointList.size();
+				std::vector<float> dGT(regionSize), dMY(regionSize);
+				float gt_cost = ComputeRegionCost(pointList, g_GT);
+				float my_cost = ComputeRegionCost(pointList, g_mydisp);
+				
+				printf("Region %d cost-> GT:%.1f, MY:%.1f\n", id, gt_cost, my_cost);
 			}
 			
 
@@ -289,7 +312,7 @@ void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh, VECBITMAP<Plane>&
 		g_segments.copyTo(outImg3);	badOnOC.copyTo(outImg4);
 		g_L.copyTo(outImg5);	badOnALL.copyTo(outImg6);
 
-
+		printf("111111\n");
 		std::string folderpath = folders[folder_id];
 		char buf[256];
 		//sprintf(buf, "%s=%.2f.png", folderpath.substr(0, folderpath.length() - 1).c_str(), badPixelRate[0] * 100.0f);
@@ -304,14 +327,19 @@ void EvaluateDisparity(VECBITMAP<float>& h_disp, float thresh, VECBITMAP<Plane>&
 		cv::imwrite("d:\\badOnALL.png", badOnALL);
 		cv::imwrite("d:\\badOnOC.png", badOnOC);
 
+		printf("22222\n");
 		g_colgradL = ComputeColGradFeature(g_L);
 		g_colgradR = ComputeColGradFeature(g_R);
 		g_coeffsL = coeffsL;
 		g_stereo = compareImg;
 		g_mydisp = disp;
 
+		printf("333333\n");
 		cv::imshow("disparity", compareImg);
+		printf("44444\n");
 		cv::setMouseCallback("disparity", on_mouse);
+		printf("55555\n");
 		cv::waitKey(0);
+		printf("aaaaaa");
 	}
 }

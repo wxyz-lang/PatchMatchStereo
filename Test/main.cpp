@@ -4,7 +4,8 @@
 #include <cstdlib>
 #include <algorithm>
 #include <string>
-
+#include <vector>
+#include <stack>
 
 template<class T>
 class VECBITMAP {
@@ -94,12 +95,48 @@ void test2(int kkk) {
 	printf("%d\n", ::kkk);
 }
 
+inline double ranf()	// ranf() is uniform in 0..1
+{
+	double a = rand();
+	return a / RAND_MAX;
+}
+
+double BoxMuller(double m, double s)	// normal random variate generator 
+{										// mean m, standard deviation s 
+	double x1, x2, w, y1;
+	static double y2;
+	static int use_last = 0;
+
+	if (use_last)										// use value from previous call 
+	{
+		y1 = y2;
+		use_last = 0;
+	}
+	else
+	{
+		do {
+			x1 = 2.0 * ranf() - 1.0;
+			x2 = 2.0 * ranf() - 1.0;
+			w = x1 * x1 + x2 * x2;
+		} while (w >= 1.0);
+
+		w = sqrt((-2.0 * log(w)) / w);
+		y1 = x1 * w;
+		y2 = x2 * w;
+		use_last = 1;
+	}
+
+	return(m + y1 * s);
+}
+
+
 int main()
 {
+	double a = BoxMuller(0, 0);
+	double b = BoxMuller(23.22, 0);
 
-	std::string s = "abcde";
-	std::string s2 = s.substr(0, s.length() - 1);
-	printf("%s\n", s2.c_str());
+	printf("%lf\n", a);
+	printf("%lf\n", b);
 
 	return 0;
 }

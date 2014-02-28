@@ -38,7 +38,7 @@
 
 #define USE_OPENMP
 //#define LOAD_RESULT_FROM_LAST_RUN
-//#define DO_POST_PROCESSING
+#define DO_POST_PROCESSING
 //#define USE_NELDERMEAD_OPT
 
 // Static class member initialization 
@@ -59,7 +59,7 @@ const float		tau_col		= 30;
 const float		tau_grad	= 6;
 const float		granularity = 0.25f;
 
-const int folder_id = 5;
+const int folder_id = 4;
 const std::string folders[] = { "tsukuba/", "venus/", "teddy/", "cones/", "Bowling2/", "Baby1/" };
 const int scales[]	= { 16, 8, 4, 4, 3, 3 };
 const int drange[]	= { 16, 20, 60, 60, 70, 70 };

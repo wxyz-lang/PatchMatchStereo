@@ -2,11 +2,13 @@
 #include <cstring>
 #include <algorithm>
 
-static const int n = 3;
+#define MAX_DIM 6
+
+static int n = 3;
 
 struct NMPoint {
 	float cost;
-	float data[n];
+	float data[MAX_DIM];
 	NMPoint operator+(NMPoint& m) { NMPoint ret(*this); for (int i = 0; i < n; i++) { ret.data[i] += m.data[i]; } return ret; }
 	NMPoint operator-(NMPoint& m) { NMPoint ret(*this); for (int i = 0; i < n; i++) { ret.data[i] -= m.data[i]; } return ret; }
 	NMPoint operator*(float c)    { NMPoint ret(*this); for (int i = 0; i < n; i++) { ret.data[i] *= c; } return ret; }
@@ -51,8 +53,10 @@ inline NMPoint ComputeGeometricCenter(NMPoint *vertices, int nitems)
 	return sum / nitems;
 }
 
-int NelderMeadOptimize(float *x, float(*feval)(float*, int), int maxiters = 0)
+int NelderMeadOptimize(float *x, int dims, float(*feval)(float*, int), int maxiters = 0)
 {
+	n = dims;
+
 	int	retCode			= -1;
 	const float tol		= 1.f;		// tol = 1 suffice.
 	const float alpha	= 1;
@@ -60,8 +64,9 @@ int NelderMeadOptimize(float *x, float(*feval)(float*, int), int maxiters = 0)
 	const float rho		= -0.5;
 	const float sigma	= 0.5;
 
+
 	NMPoint xo, xr, xe, xc, xBest, xWorst;
-	NMPoint vertices[n + 1];
+	NMPoint vertices[MAX_DIM + 1];
 
 	for (int i = 0; i < n + 1; i++) {
 		memcpy(vertices[i].data, x + i * n, n * sizeof(float));

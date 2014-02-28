@@ -27,6 +27,82 @@ VECBITMAP<int> g_labelmap;
 VECBITMAP<Plane> g_coeffsL_ransac, g_coeffsL_neldermead;
 VECBITMAP<float> g_dsiL;
 
+inline double ranf()	// ranf() is uniform in 0..1
+{
+	double a = rand();
+	return a / RAND_MAX;
+}
+
+double BoxMuller(double m, double s)	// normal random variate generator 
+{										// mean m, standard deviation s 
+	double x1, x2, w, y1;
+	static double y2;
+	static int use_last = 0;
+
+	if (use_last)										// use value from previous call 
+	{
+		y1 = y2;
+		use_last = 0;
+	}
+	else
+	{
+		do {
+			x1 = 2.0 * ranf() - 1.0;
+			x2 = 2.0 * ranf() - 1.0;
+			w = x1 * x1 + x2 * x2;
+		} while (w >= 1.0);
+
+		w = sqrt((-2.0 * log(w)) / w);
+		y1 = x1 * w;
+		y2 = x2 * w;
+		use_last = 1;
+	}
+
+	return(m + y1 * s);
+}
+
+struct QuadraticSurface {
+	float A, B, C, D, E, F;
+	QuadraticSurface() {}
+	QuadraticSurface(float A_, float B_, float C_, float D_, float E_, float F_)
+		: A(A_), B(B_), C(C_), D(D_), E(E_), F(F_) {}
+	void RandomPerturbTo(float *buf)
+	{
+		buf[0] = BoxMuller(A, 0.001);
+		buf[1] = BoxMuller(B, 0.001);
+		buf[2] = BoxMuller(C, 0);
+		buf[3] = BoxMuller(D, 0.01);
+		buf[4] = BoxMuller(E, 0.01);
+		buf[5] = BoxMuller(F, 3);
+		//buf[0] = BoxMuller(A, 0.001);
+		//buf[1] = BoxMuller(B, 0.001);
+		//buf[2] = BoxMuller(C, 0.000);
+		//buf[3] = BoxMuller(D, 0.00);
+		//buf[4] = BoxMuller(E, 0.00);
+		//buf[5] = BoxMuller(F, 0.00);
+	}
+	void SetFromArray(float *arr) {
+		A = arr[0];
+		B = arr[1];
+		C = arr[2];
+		D = arr[3];
+		E = arr[4];
+		F = arr[5];
+	}
+	void SetToArray(float *arr)
+	{
+		arr[0] = A;
+		arr[1] = B;
+		arr[2] = C;
+		arr[3] = D;
+		arr[4] = E;
+		arr[5] = F;
+	}
+	float ToDisparity(float y, float x)
+	{
+		return A*x*x + B*y*y + C*x*y + D*x + E*y + F;
+	}
+};
 
 int meanShiftSegmentation(const cv::Mat &img, const float colorRadius, const int spatialRadius, const int minRegion, cv::Mat& result)
 {
@@ -189,10 +265,37 @@ double ComputePlaneCost(Plane& coeff, VECBITMAP<float>& dsi, std::vector<cv::Poi
 }
 
 struct NM_OPT_PARAM {
+	float x0, y0;
 	VECBITMAP<float> *dsi;
 	std::vector<cv::Point2d> *pointList;
 };
 NM_OPT_PARAM nm_opt_struct;
+
+
+double ComputeQuadraticSurfaceCost(QuadraticSurface& coeff, VECBITMAP<float>& dsi, std::vector<cv::Point2d>& pointList)
+{
+	double cost = 0;
+	int regionSize = pointList.size();
+	int x0 = nm_opt_struct.x0;
+	int y0 = nm_opt_struct.y0;
+	//printf("regionSize = %d\n", regionSize);
+	for (int i = 0; i < regionSize; i++) {
+		int y = pointList[i].y;
+		int x = pointList[i].x;
+		float d = coeff.A * x * x + coeff.B * y * y + coeff.C * x * y
+		        + coeff.D * x     + coeff.E * y     + coeff.F;
+		int level = d / granularity + 0.5;
+		//printf("(%d, %d)   i = %d   d = %f   level = %d\n", y, x, i, d, level);
+		if (d < 0 || d > dmax) {
+			cost += BAD_PLANE_PENALTY;
+		}
+		else {
+			cost += dsi.get(y + y0, x + x0)[level];
+		}
+	}
+	return cost;
+}
+
 
 inline float nm_compute_plane_cost(float *abc, int n = 3)
 {
@@ -201,10 +304,116 @@ inline float nm_compute_plane_cost(float *abc, int n = 3)
 	return ComputePlaneCost(coeff, *nm_opt_struct.dsi, *nm_opt_struct.pointList);
 }
 
+inline float nm_compute_quadratic_surface_cost(float *abcdef, int n = 6)
+{
+	QuadraticSurface coeff;
+	coeff.SetFromArray(abcdef);
+	//printf("ready\n");
+	return ComputeQuadraticSurfaceCost(coeff, *nm_opt_struct.dsi, *nm_opt_struct.pointList);
+}
+
+
+void NelderMeadImproveNonlinear(std::vector<cv::Point2d>& pointList, VECBITMAP<float>& dsi, VECBITMAP<float>& disp, VECBITMAP<Plane>& coeffs)
+{
+
+	int NelderMeadOptimize(float *x, int dims, float(*feval)(float*, int), int maxiters = 0);
+
+	const int MIN_SAMPLE_SIZE = 5;
+	const int regionSize = pointList.size();
+
+	if (regionSize < MIN_SAMPLE_SIZE) {
+		for (int i = 0; i < regionSize; i++) {
+			int y = pointList[i].y;
+			int x = pointList[i].x;
+			coeffs[y][x].RandomAssign(y, x, dmax);
+		}
+		return;
+	}
+
+	std::vector<int> xcoord(regionSize);
+	std::vector<int> ycoord(regionSize);
+	for (int i = 0; i < regionSize; i++) {
+		xcoord[i] = pointList[i].x;
+		ycoord[i] = pointList[i].y;
+	}
+	nth_element(xcoord.begin(), xcoord.begin() + regionSize / 2, xcoord.end());
+	nth_element(ycoord.begin(), ycoord.begin() + regionSize / 2, ycoord.end());
+	int x0 = *(xcoord.begin() + regionSize / 2);
+	int y0 = *(ycoord.begin() + regionSize / 2);
+
+	// Do centralization for the ease of optimization
+	// If not centralized, to obtained a fairly symmetric quadratic surface my require large pertubation
+	// of the value of D, E, F, which depends on the scale of current coordinates. seems not stable.
+	std::vector<cv::Point2d> centralizedPointList(regionSize);
+	for (int i = 0; i < regionSize; i++) {
+		centralizedPointList[i].x = pointList[i].x - x0;
+		centralizedPointList[i].y = pointList[i].y - y0;
+	}
+
+	//printf("finish centalization.\n");
+	float a, b, c, A, B, C, D, E, F;
+	a = coeffs[y0][x0].a;
+	b = coeffs[y0][x0].b;
+	c = coeffs[y0][x0].c;
+	A = B = C = 0;
+	D = a; E = b;
+	F = c + D*x0 + E*y0;
+
+	QuadraticSurface initplane(A, B, C, D, E, F);
+
+	float vertices[6 * 7];
+	int max_iters = std::min(regionSize, 15);
+
+	//initplane.SetToArray(&vertices[0]);
+	//printf("before iter.\n");
+	for (int iter = 0; iter < max_iters; iter++) {
+
+		// initialize simplex vertices
+		for (int i = 1; i < 7; i++) {
+			initplane.RandomPerturbTo(&vertices[6 * i]);
+		}
+		//for (int i = 0; i < 7; i++) {
+		//	initplane.SetToArray(&vertices[6 * i]);
+		//}
+		// always include the initial plane 
+		initplane.SetToArray(&vertices[6]);
+
+		
+		// invoke nelder-mead
+		nm_opt_struct.dsi = &dsi;
+		nm_opt_struct.pointList = &centralizedPointList;
+		nm_opt_struct.x0 = x0;
+		nm_opt_struct.y0 = y0;
+		//printf("fin\n");
+		float cost_before = nm_compute_quadratic_surface_cost(vertices);
+		//printf("invoking..\n");
+		NelderMeadOptimize(vertices, 6, nm_compute_quadratic_surface_cost, 30);
+		//printf("after invoking..\n");
+		float cost_after = nm_compute_quadratic_surface_cost(vertices);
+
+		if (cost_after - cost_before > 0) {
+			printf("BUG: energy increased!\n");
+		}
+	}
+
+	//printf("surface neldermead done.\n");
+	QuadraticSurface bestsurface(vertices[0], vertices[1], vertices[2], vertices[3], vertices[4], vertices[5]);
+
+	for (int i = 0; i < regionSize; i++) {
+		int y = centralizedPointList[i].y;
+		int x = centralizedPointList[i].x;
+		if (!InBound(y + y0, x + x0)) {
+			printf("OUT OF BOUND BUG!\n");
+		}
+		disp[y + y0][x + x0] = bestsurface.ToDisparity(y, x);
+	}
+
+}
+
 void NelderMeadEstimate(std::vector<cv::Point2d>& pointList, VECBITMAP<float>& dsi, VECBITMAP<float>& disp, VECBITMAP<Plane>& coeffs)
 {
 
-	int NelderMeadOptimize(float *x, float(*feval)(float*, int), int maxiters = 0);
+	int NelderMeadOptimize(float *x, int dims, float(*feval)(float*, int), int maxiters = 0);
 
 	const int MIN_SAMPLE_SIZE = 5;
 	const int regionSize = pointList.size();
@@ -262,7 +471,7 @@ void NelderMeadEstimate(std::vector<cv::Point2d>& pointList, VECBITMAP<float>& d
 		nm_opt_struct.dsi = &dsi;
 		nm_opt_struct.pointList = &pointList;
 		float cost_before = nm_compute_plane_cost(vertices);
-		NelderMeadOptimize(vertices, nm_compute_plane_cost, 30);
+		NelderMeadOptimize(vertices, 3, nm_compute_plane_cost, 30);
 		float cost_after = nm_compute_plane_cost(vertices);
 
 		if (cost_after - cost_before > 0) {
@@ -340,9 +549,20 @@ void PlanefitView(cv::Mat& imL, VECBITMAP<float>& dsiL, VECBITMAP<Plane>& coeffs
 {
 	extern cv::Mat g_segments;
 	Timer::tic("segmentation");
-	//meanShiftSegmentation(imL, 4, 5, 20, g_segments);
-	slicSegmentation(imL, 300, 20, g_segments);
+	//meanShiftSegmentation(imL, 2, 2, 100, g_segments);
+	meanShiftSegmentation(imL, 4, 5, 20, g_segments);
+	//slicSegmentation(imL, 300, 20, g_segments);
 	Timer::toc();
+
+	//Timer::tic("Intersect meanshift and SLIC");
+	//cv::Mat segment1, segment2;
+	//meanShiftSegmentation(imL, 4, 5, 20, segment1);
+	//slicSegmentation(imL, 300, 20, segment2);
+	//segment1.convertTo(segment1, CV_32FC3);
+	//segment2.convertTo(segment2, CV_32FC3);
+	//g_segments = (segment1 + segment2) / 2;
+	//g_segments.convertTo(g_segments, CV_8UC3);
+	//Timer::toc();
 
 	VECBITMAP<int> labelmap(nrows, ncols);
 	int nlables = FromSegmentMapToLabelMap(g_segments, labelmap);
@@ -385,7 +605,15 @@ void PlanefitView(cv::Mat& imL, VECBITMAP<float>& dsiL, VECBITMAP<Plane>& coeffs
 	Timer::toc();
 
 	PlaneMapToDisparityMap(coeffsL, dispL);
+
+	for (int id = 0; id < nlables; id++) {
+		// Optimize nonlinear part
+		NelderMeadImproveNonlinear(regionList[id], dsiL, dispL, coeffsL);
+	}
+
+	
 }
+
 
 void RunRansacPlaneFitting(cv::Mat& imL, cv::Mat& imR, int ndisps)
 {
@@ -419,14 +647,17 @@ void RunRansacPlaneFitting(cv::Mat& imL, cv::Mat& imR, int ndisps)
 	VECBITMAP<Plane> coeffsL(nrows, ncols);
 	VECBITMAP<Plane> coeffsR(nrows, ncols);
 	PlanefitView(imL, dsiL, coeffsL, dispL);
-	PlanefitView(imR, dsiR, coeffsR, dispR);
+	//PlanefitView(imR, dsiR, coeffsR, dispR);
 
-	VECBITMAP<float> weightsL = PrecomputeWeights(imL);
-	VECBITMAP<float> weightsR = PrecomputeWeights(imR);
+	//VECBITMAP<float> weightsL = PrecomputeWeights(imL);
+	//VECBITMAP<float> weightsR = PrecomputeWeights(imR);
 
-	Timer::tic("Planefit Postprocess");
-	PostProcess(weightsL, weightsR, coeffsL, coeffsR, dispL, dispR);
-	Timer::toc();
+	//Timer::tic("Planefit Postprocess");
+	//PostProcess(weightsL, weightsR, coeffsL, coeffsR, dispL, dispR);
+
 
 	EvaluateDisparity(dispL, 0.5f, coeffsL);
 }
+
+
+
