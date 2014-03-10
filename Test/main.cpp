@@ -132,11 +132,21 @@ double BoxMuller(double m, double s)	// normal random variate generator
 
 int main()
 {
-	double a = BoxMuller(0, 0);
-	double b = BoxMuller(23.22, 0);
+	FILE *fin = fopen("C:/Users/v-cz/Desktop/rank.txt", "r");
+	FILE *fout = fopen("C:/Users/v-cz/Desktop/rank_latex.txt", "w");
 
-	printf("%lf\n", a);
-	printf("%lf\n", b);
+	char rank[100];
+	char buf1[100], buf2[100], buf3[100], buf4[100], buf5[100], buf6[100];
 
-	return 0;
+	while (fscanf(fin, "%s", rank) != EOF) {
+		fprintf(fout, "& & $%s$ ", rank);
+		for (int i = 0; i < 4; i++) {
+			fscanf(fin, "%s %s %s %s %s %s", buf1, buf2, buf3, buf4, buf5, buf6);
+			fprintf(fout, " & & $%s_{%s}$ & $%s_{%s}$ & $%s_{%s}$ ", buf1, buf2, buf3, buf4, buf5, buf6);
+		}
+		fprintf(fout, "\\\\\n");
+	}
+
+	fclose(fin);
+	fclose(fout);
 }

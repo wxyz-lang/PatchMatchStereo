@@ -166,6 +166,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="GuidedFilter.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="ms.cpp" />
     <ClCompile Include="msImageProcessor.cpp" />

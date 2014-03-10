@@ -182,6 +182,8 @@ void PostProcess(
 	VECBITMAP<Plane>& coeffsL, VECBITMAP<Plane>& coeffsR,
 	VECBITMAP<float>& dispL, VECBITMAP<float>& dispR);
 VECBITMAP<float> PrecomputeWeights(cv::Mat& img);
+void WriteToPlyFile(VECBITMAP<float>& disp, cv::Mat& img, std::string filepath);
+int slicSegmentation(const cv::Mat &img, const int numPreferedRegions, const int compactness, cv::Mat& result);
 
 
 extern const std::string folders[60];
@@ -189,5 +191,8 @@ extern const int scale, ndisps, dmax, patch_w, patch_r, folder_id;
 extern const float alpha, gamma, tau_col, tau_grad, granularity, BAD_PLANE_PENALTY;
 
 
-
+#define OPTIMIZE_LINEAR_PART	0
+#define OPTIMIZE_NONLINEAR_PART 1
+#define COPY_PLANE_LABEL		2
+#define PASTE_PLANE_LABEL		3
 

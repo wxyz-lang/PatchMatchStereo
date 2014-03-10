@@ -37,8 +37,8 @@
 
 
 #define USE_OPENMP
-//#define LOAD_RESULT_FROM_LAST_RUN
-#define DO_POST_PROCESSING
+#define LOAD_RESULT_FROM_LAST_RUN
+//#define DO_POST_PROCESSING
 //#define USE_NELDERMEAD_OPT
 
 // Static class member initialization 
@@ -52,17 +52,17 @@ int			g_improve_cnt = 0;
 
 const int		patch_w		= 35;
 const int		patch_r		= 17;
-const int		maxiters	= 3;
+const int		maxiters	= 2;
 const float		alpha		= 0.9;
 const float		gamma		= 10;
-const float		tau_col		= 30;
-const float		tau_grad	= 6;
+const float		tau_col		= 10;
+const float		tau_grad	= 2;
 const float		granularity = 0.25f;
 
-const int folder_id = 4;
-const std::string folders[] = { "tsukuba/", "venus/", "teddy/", "cones/", "Bowling2/", "Baby1/" };
-const int scales[]	= { 16, 8, 4, 4, 3, 3 };
-const int drange[]	= { 16, 20, 60, 60, 70, 70 };
+const int folder_id = 8;    //     0          1         2         3          4           5         6            7              8            9          10          11          12        13        14         15         16          17      18         19
+const std::string folders[] = { "tsukuba/", "venus/", "teddy/", "cones/", "Bowling2/", "Baby1/", "Cloth3/", "Flowerpots/", "Lampshade2/", "Midd1/", "Monopoly/", "Plastic/", "Rocks1/", "Wood1/", "Books/", "Moebius/", "Dolls/", "Baby2/", "Wood2/", "Rocks2/"};
+const int scales[] = { 16, 8, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3 };
+const int drange[] = { 16, 20, 60, 60, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70 };
 const int scale				= scales[folder_id];
 const int ndisps			= drange[folder_id];
 const int dmax				= ndisps - 1;
@@ -682,7 +682,11 @@ void RunPatchMatchStereo(cv::Mat& imL, cv::Mat& imR, int ndisps)
 	PostProcess(weightsL, weightsR, coeffsL, coeffsR, dispL, dispR);
 	Timer::toc();
 
-	EvaluateDisparity(dispL, 0.5f, coeffsL);
+	WriteToPlyFile(dispL, imL, folders[folder_id] + "PatchMatch.ply");
+	dispL.SaveToBinaryFile(folders[folder_id] + "PatchMatch_dispL.bin");
+	dispR.SaveToBinaryFile(folders[folder_id] + "PatchMatch_dispR.bin");
+
+	EvaluateDisparity(dispL, 1.f, coeffsL);
 }
 
 void RunPatchMatchStereo(cv::Mat& imL, cv::Mat& imR, int ndisps, VECBITMAP<float>& uL, VECBITMAP<float>& uR, float theta, float lambda)
@@ -780,6 +784,130 @@ void RunPatchMatchStereo(cv::Mat& imL, cv::Mat& imR, int ndisps, VECBITMAP<float
 
 
 
+
+
+extern VECBITMAP<float> g_dispOld, g_dispNew;
+extern std::vector<std::vector<cv::Point2d>> g_regionList;
+extern VECBITMAP<int> g_labelmap;
+void InteractiveRefinement(cv::Mat& imL)
+{
+	printf("1111\n");
+	VECBITMAP<Plane> coeffsL(nrows, ncols), coeffsR(nrows, ncols);
+	coeffsL.LoadFromBinaryFile(folders[folder_id] + "coeffsL.bin");
+	coeffsR.LoadFromBinaryFile(folders[folder_id] + "coeffsR.bin");
+	printf("1111\n");
+	VECBITMAP<float> dispL(nrows, ncols), dispR(nrows, ncols);
+	dispL.LoadFromBinaryFile(folders[folder_id] + "PatchMatch_dispL.bin");
+	dispR.LoadFromBinaryFile(folders[folder_id] + "PatchMatch_dispR.bin");
+
+	printf("1111\n");
+
+	g_dispOld = dispL;
+	g_dispNew = dispL;
+
+	printf("22222\n");
+
+	extern cv::Mat g_segments;
+	Timer::tic("segmentation");
+	//meanShiftSegmentation(imL, 2, 2, 100, g_segments);
+	//meanShiftSegmentation(imL, 5, 5, 200, g_segments);
+	slicSegmentation(imL, 200, 10, g_segments);
+	Timer::toc();
+
+
+	//Timer::tic("Intersect meanshift and SLIC");
+	//cv::Mat segment1, segment2;
+	//meanShiftSegmentation(imL, 2, 2, 200, segment1);
+	//slicSegmentation(imL, 120, 20, segment2);
+	//segment1.convertTo(segment1, CV_32FC3);
+	//segment2.convertTo(segment2, CV_32FC3);
+	//g_segments = (segment1 + segment2) / 2;
+	//g_segments.convertTo(g_segments, CV_8UC3);
+	//Timer::toc();
+
+
+	cv::imwrite(folders[folder_id] + "segments.png", g_segments);
+
+	VECBITMAP<int> labelmap(nrows, ncols);
+	int FromSegmentMapToLabelMap(cv::Mat& segmap, VECBITMAP<int>& labelmap);
+	int nlables = FromSegmentMapToLabelMap(g_segments, labelmap);
+
+
+	std::vector<int> regionSize(nlables, 0);
+	for (int y = 0; y < nrows; y++) {
+		for (int x = 0; x < ncols; x++) {
+			regionSize[labelmap[y][x]]++;
+		}
+	}
+	std::vector<std::vector<cv::Point2d>> regionList(nlables);
+	for (int i = 0; i < nlables; i++) {
+		regionList[i].reserve(regionSize[i]);
+	}
+	for (int y = 0; y < nrows; y++) {
+		for (int x = 0; x < ncols; x++) {
+			int label = labelmap[y][x];
+			regionList[label].push_back(cv::Point2d(x, y));
+		}
+	}
+
+	g_regionList = regionList;
+	g_labelmap = labelmap;
+
+	void EvaluateDisparity2(VECBITMAP<float>& h_disp, float thresh, VECBITMAP<Plane>& coeffsL);
+
+	for (;;) {
+		EvaluateDisparity2(g_dispNew, 0.5f, coeffsL);
+	}
+}
+
+
+void WeightedMedianFilter(int yc, int xc, VECBITMAP<float>& disp, VECBITMAP<float>& weights, float& ret)
+{
+	std::vector<std::pair<float, float>> dw_pairs;
+
+	int yb = std::max(0, yc - patch_r), ye = std::min(nrows - 1, yc + patch_r);
+	int xb = std::max(0, xc - patch_r), xe = std::min(ncols - 1, xc + patch_r);
+
+	for (int y = yb; y <= ye; y++) {
+		for (int x = xb; x <= xe; x++) {
+			std::pair<float, float> dw(disp[y][x], weights[y - yc + patch_r][x - xc + patch_r]);
+			dw_pairs.push_back(dw);
+		}
+	}
+
+	//for (int y = yc - patch_r, i = 0; y <= yc + patch_r; y++) {
+	//	for (int x = xc - patch_r; x <= xc + patch_r; x++, i++) {
+	//		if (InBound(y, x)) {
+	//			std::pair<float, float> dw(disp[y][x], weights.data[i]);
+	//			dw_pairs.push_back(dw);
+	//		}
+	//	}
+	//}
+
+	std::sort(dw_pairs.begin(), dw_pairs.end());
+
+	float w = 0.f, wsum = 0.f;
+	for (int i = 0; i < dw_pairs.size(); i++) {
+		wsum += dw_pairs[i].second;
+	}
+
+	for (int i = 0; i < dw_pairs.size(); i++) {
+		w += dw_pairs[i].second;
+		if (w >= wsum / 2.f) {
+			// Note that this line can always be reached.
+			if (i > 0) {
+				ret = (dw_pairs[i - 1].first + dw_pairs[i].first) / 2.f;
+			}
+			else {
+				ret = dw_pairs[i].first;
+			}
+			break;
+		}
+	}
+}
+
+
+
 int main()
 {
 #ifndef USE_OPENMP
@@ -792,21 +920,43 @@ int main()
 	ncols = imL.cols;
 
 
-	cv::Mat dispL, dispR;
+	//cv::Mat img = cv::imread("D:/code/PatchMatchStereo/PatchMatchStereo/Bowling2/LuMap_4_0.1.png");
+
+	//cv::rectangle(img, cv::Rect(277, 222, 98, 98), cv::Scalar(0, 0, 255));
+	//cv::rectangle(img, cv::Rect(230, 90, 98, 98), cv::Scalar(0, 255, 0));
+	//cv::rectangle(img, cv::Rect(120, 170, 98, 98), cv::Scalar( 255, 0, 255));
+
+	//cv::imwrite("D:/code/PatchMatchStereo/PatchMatchStereo/Bowling2/indicate.png", img);
+	//cv::imshow("asdfsdf", img);
+	//cv::waitKey(0);
+	//return 0;
+
+
+	//cv::Mat gt = cv::imread(folders[folder_id] + "disp2.png");
+	//VECBITMAP<float> dispLL(nrows, ncols);
+	//for (int y = 0; y < nrows; y++) {
+	//	for (int x = 0; x < ncols; x++) {
+	//		dispLL[y][x] = (float)gt.at<cv::Vec3b>(y, x)[0] / 3.f;
+	//	}
+	//}
+	//WriteToPlyFile(dispLL, imL, folders[folder_id] + "GT.ply");
+	//return 0;
+
+	
 	//Timer::tic("LocalSearch");
 	//LocalSearch(imL, imR, ndisps, dispL, dispR);
 	Timer::tic("PatchMatchStereo");
 	//RunPatchMatchStereo(imL, imR, ndisps);
-	//RunLaplacianStereo(imL, imR, ndisps);
-	RunRansacPlaneFitting(imL, imR, ndisps);
+	RunLaplacianStereo(imL, imR, ndisps);
+	//RunRansacPlaneFitting(imL, imR, ndisps);
 	Timer::toc();
 
+	//InteractiveRefinement(imL);
+
 	
-	//dispL.convertTo(dispL, CV_8UC3, scale);
-	//dispR.convertTo(dispL, CV_8UC3, scale);
-	//cv::imshow("disparity", dispL);
-	//cv::waitKey(0);
+	
 
 	return 0;
 }
+
 
